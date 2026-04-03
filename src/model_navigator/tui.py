@@ -3,28 +3,31 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Static
 from textual.widget import Widget
+from textual.reactive import reactive
 
 
 class LineageGraph(Widget, can_focus=True):
-    def __init__(self, models: list[str]):
+    selected = reactive("", recompose=True)
+
+    def __init__(self, graph: dict, selected: str):
         super().__init__(id="graph")
-        self.models = models
-        self.selected = 0
+        self.graph = graph
+        self.selected = selected
 
     def compose(self) -> ComposeResult:
-        yield Static(self.models[self.selected], id="node-box")
-
-    def select_prev(self):
-        self.selected = max(self.selected - 1, 0)
-        self.query_one("#node-box", Static).update(self.models[self.selected])
-
-    def select_next(self):
-        self.selected = min(self.selected + 1, len(self.models) - 1)
-        self.query_one("#node-box", Static).update(self.models[self.selected])
-
+        node = self.graph[self.selected]
+        with Horizontal(id="columns"):
+            with Vertical(id="col-upstream"):
+                for name in node["upstream"]:
+                    yield Static(name, classes="node-box upstream")
+            with Vertical(id="col-selected"):
+                yield Static(self.selected, classes="node-box selected")
+            with Vertical(id="col-downstream"):
+                for name in node["downstream"]:
+                    yield Static(name, classes="node-box downstream")
 
 
 class Inspector(Static):
@@ -41,15 +44,17 @@ class Inspector(Static):
         upstream = Text("- stag_raw_data\n stg_events", style="dim")
         downstream = Text("- fct_output", style="dim")
 
-        self.update(Group(
-            title,
-            Rule(style="dim"),
-            details,
-            Rule(title="Upstream", style="dim"),
-            upstream,
-            Rule(title="Downstream", style="dim"),
-            downstream,
-        ))
+        self.update(
+            Group(
+                title,
+                Rule(style="dim"),
+                details,
+                Rule(title="Upstream", style="dim"),
+                upstream,
+                Rule(title="Downstream", style="dim"),
+                downstream,
+            )
+        )
 
 
 class ModelNavigatorApp(App[None]):
@@ -71,12 +76,30 @@ class ModelNavigatorApp(App[None]):
         background: $surface;
     }
 
-    #node-box {
+    #columns {
+        width: 1fr;
+        height: 1fr;
+        align: center middle;
+    }
+
+    .node-box {
         width: 24;
         height: 3;
         content-align: center middle;
         border: round $accent;
         background: $panel;
+        margin: 1;
+    }
+
+    .node-box.selected {
+        border: round $warning;
+        background: $boost;
+    }
+
+    #col-upstream, #col-selected, #col-downstream {
+        width: 1fr;
+        height: auto;
+        align: center middle;
     }
 
     #inspector {
@@ -100,11 +123,33 @@ class ModelNavigatorApp(App[None]):
         ("q", "quit", "Quit"),
     ]
 
-    FAKE_MODELS = ["stg_charges", "int_revenue", "fct_payments", "dim_customers", "stg_users"]
+    FAKE_GRAPH = {
+        "stg_charges": {
+            "type": "model",
+            "upstream": [],
+            "downstream": ["int_revenue", "fct_payments"],
+        },
+        "stg_users": {"type": "model", "upstream": [], "downstream": ["dim_customers"]},
+        "int_revenue": {
+            "type": "model",
+            "upstream": ["stg_charges"],
+            "downstream": ["fct_payments"],
+        },
+        "dim_customers": {
+            "type": "model",
+            "upstream": ["stg_users"],
+            "downstream": ["fct_payments"],
+        },
+        "fct_payments": {
+            "type": "model",
+            "upstream": ["int_revenue", "dim_customers"],
+            "downstream": [],
+        },
+    }
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
-            yield LineageGraph(self.FAKE_MODELS)
+            yield LineageGraph(self.FAKE_GRAPH, "int_revenue")
             yield Inspector("Inspector", id="inspector")
         yield Footer()
 
@@ -114,19 +159,22 @@ class ModelNavigatorApp(App[None]):
 
     def action_select_prev(self):
         graph = self.query_one(LineageGraph)
-        graph.select_prev()
-        self._refresh_selection()
+        node = graph.graph[graph.selected]
+        if node["upstream"]:
+            graph.selected = node["upstream"][0]
+            self._refresh_selection()
 
     def action_select_next(self):
         graph = self.query_one(LineageGraph)
-        graph.select_next()
-        self._refresh_selection()
+        node = graph.graph[graph.selected]
+        if node["downstream"]:
+            graph.selected = node["downstream"][0]
+            self._refresh_selection()
 
     def _refresh_selection(self):
         graph = self.query_one(LineageGraph)
-        name = graph.models[graph.selected]
-        self.sub_title = name
-        self.query_one(Inspector).show_model(name, graph.selected, len(graph.models))
+        self.sub_title = graph.selected
+        self.query_one(Inspector).show_model(graph.selected, 0, len(graph.graph))
 
 
 def main() -> None:
