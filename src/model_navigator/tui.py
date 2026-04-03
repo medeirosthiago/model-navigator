@@ -1,3 +1,4 @@
+from model_navigator.lineage import assign_columns
 from rich.console import Group
 from rich.rule import Rule
 from rich.table import Table
@@ -18,16 +19,19 @@ class LineageGraph(Widget, can_focus=True):
         self.selected = selected
 
     def compose(self) -> ComposeResult:
-        node = self.graph[self.selected]
+        columns = assign_columns(self.graph)
+        grouped: dict[int, list[str]] = {}
+        for name, col in columns.items():
+            grouped.setdefault(col, []).append(name)
+
         with Horizontal(id="columns"):
-            with Vertical(id="col-upstream"):
-                for name in node["upstream"]:
-                    yield Static(name, classes="node-box upstream")
-            with Vertical(id="col-selected"):
-                yield Static(self.selected, classes="node-box selected")
-            with Vertical(id="col-downstream"):
-                for name in node["downstream"]:
-                    yield Static(name, classes="node-box downstream")
+            for col_idx in sorted(grouped):
+                with Vertical(classes="graph-column"):
+                    for name in sorted(grouped[col_idx]):
+                        classes = "node-box"
+                        if name == self.selected:
+                            classes += " selected"
+                        yield Static(name, classes=classes)
 
 
 class Inspector(Static):
@@ -86,14 +90,14 @@ class ModelNavigatorApp(App[None]):
         width: 24;
         height: 3;
         content-align: center middle;
-        border: round $accent;
+        border: round $warning;
         background: $panel;
         margin: 1;
     }
 
     .node-box.selected {
-        border: round $warning;
-        background: $boost;
+        border: round $success;
+        background: $panel;
     }
 
     #col-upstream, #col-selected, #col-downstream {
@@ -117,9 +121,10 @@ class ModelNavigatorApp(App[None]):
     """
 
     BINDINGS = [
-        ("escape", "quit", "Quit"),
         ("left", "select_prev", "Previous"),
         ("right", "select_next", "Next"),
+        ("up", "select_up", "Up"),
+        ("down", "select_down", "Down"),
         ("q", "quit", "Quit"),
     ]
 
@@ -158,17 +163,40 @@ class ModelNavigatorApp(App[None]):
         self._refresh_selection()
 
     def action_select_prev(self):
-        graph = self.query_one(LineageGraph)
-        node = graph.graph[graph.selected]
-        if node["upstream"]:
-            graph.selected = node["upstream"][0]
-            self._refresh_selection()
+        self._move_horizontal(-1)
 
     def action_select_next(self):
+        self._move_horizontal(1)
+
+    def _move_horizontal(self, direction: int):
         graph = self.query_one(LineageGraph)
-        node = graph.graph[graph.selected]
-        if node["downstream"]:
-            graph.selected = node["downstream"][0]
+        columns = assign_columns(graph.graph)
+        current_col = columns[graph.selected]
+        target_col = current_col + direction
+        siblings = sorted(name for name, col in columns.items() if col == current_col)
+        current_row = siblings.index(graph.selected)
+        target_siblings = sorted(name for name, col in columns.items() if col == target_col)
+        if not target_siblings:
+            return
+        target_row = min(current_row, len(target_siblings) - 1)
+        graph.selected = target_siblings[target_row]
+        self._refresh_selection()
+
+    def action_select_up(self):
+        self._move_vertical(-1)
+
+    def action_select_down(self):
+        self._move_vertical(1)
+
+    def _move_vertical(self, direction: int):
+        graph = self.query_one(LineageGraph)
+        columns = assign_columns(graph.graph)
+        current_col = columns[graph.selected]
+        siblings = sorted(name for name, col in columns.items() if col == current_col)
+        current_idx = siblings.index(graph.selected)
+        target_idx = current_idx + direction
+        if 0 <= target_idx < len(siblings):
+            graph.selected = siblings[target_idx]
             self._refresh_selection()
 
     def _refresh_selection(self):
