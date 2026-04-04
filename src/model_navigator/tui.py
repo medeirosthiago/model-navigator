@@ -1,19 +1,28 @@
-from model_navigator.lineage import assign_columns, nodes_with_depth, reachable_nodes
+from functools import partial
+from typing import Iterable, cast
+
 from rich.console import Group
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
+from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal
 from textual.reactive import reactive
+from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Footer, Static
+
+from .dbt_graph import GraphNode, ManifestGraph
+from .lineage import assign_columns, nodes_with_depth, reachable_nodes, selected_lineage
 
 
 class LineageGraph(Widget, can_focus=True):
     NODE_FOCUS = "node"
     LINEAGE_FOCUS = "lineage"
-    BOX_WIDTH = 24
+    WINDOW_VIEW = "window"
+    SELECTED_LINEAGE_VIEW = "selected_lineage"
+    BOX_WIDTH = 30
     BOX_HEIGHT = 3
     COLUMN_GAP = 8
     ROW_GAP = 2
@@ -47,20 +56,59 @@ class LineageGraph(Widget, can_focus=True):
     selected = reactive("")
     depth = reactive(2)
     focus_mode = reactive(NODE_FOCUS)
+    view_mode = reactive(SELECTED_LINEAGE_VIEW)
 
-    def __init__(self, graph: dict, selected: str):
+    def __init__(
+        self,
+        graph: ManifestGraph,
+        selected: str,
+        depth: int = 2,
+    ) -> None:
         super().__init__(id="graph")
         self.graph = graph
         self.selected = selected
+        self.depth = max(depth, 0)
         self.lineage_anchor = selected
+        self.lineage_view_anchor = selected
+
+    def sort_key(self, node_id: str) -> tuple[str, str]:
+        node = self.graph.nodes[node_id]
+        return (node.label.casefold(), node.unique_id.casefold())
+
+    def view_label(self) -> str:
+        if self.view_mode == self.SELECTED_LINEAGE_VIEW:
+            return "selected lineage"
+        return "column window"
 
     def visible_anchor(self) -> str:
+        if self.view_mode == self.SELECTED_LINEAGE_VIEW:
+            if self.focus_mode == self.LINEAGE_FOCUS:
+                return self.lineage_anchor
+            return self.selected
         if self.focus_mode == self.LINEAGE_FOCUS:
             return self.lineage_anchor
         return self.selected
 
     def visible_nodes(self) -> set[str]:
-        return nodes_with_depth(self.graph, self.visible_anchor(), self.depth)
+        if self.view_mode == self.SELECTED_LINEAGE_VIEW:
+            return selected_lineage(
+                self.graph.nodes,
+                self.lineage_view_anchor,
+            ) & nodes_with_depth(
+                self.graph.nodes,
+                self.visible_anchor(),
+                self.depth,
+            )
+        return nodes_with_depth(self.graph.nodes, self.visible_anchor(), self.depth)
+
+    def set_view_mode(self, mode: str) -> None:
+        if mode == self.SELECTED_LINEAGE_VIEW:
+            self.lineage_view_anchor = self.selected
+            self.lineage_anchor = self.selected
+        self.view_mode = mode
+        if mode == self.WINDOW_VIEW and self.focus_mode == self.LINEAGE_FOCUS:
+            self.lineage_anchor = self.selected
+        self.refresh()
 
     def set_focus_mode(self, mode: str) -> None:
         if mode == self.LINEAGE_FOCUS:
@@ -70,19 +118,19 @@ class LineageGraph(Widget, can_focus=True):
     def ensure_selection_visible(self) -> None:
         if self.focus_mode != self.LINEAGE_FOCUS:
             return
-        columns = assign_columns(self.graph)
-        if abs(columns[self.selected] - columns[self.lineage_anchor]) > self.depth:
+        columns = assign_columns(self.graph.nodes)
+        if abs(columns[self.selected] - columns[self.visible_anchor()]) > self.depth:
             self.lineage_anchor = self.selected
 
     def focused_edges(self, visible: set[str]) -> set[tuple[str, str]]:
-        upstream = reachable_nodes(self.graph, self.selected, "upstream")
-        downstream = reachable_nodes(self.graph, self.selected, "downstream")
+        upstream = reachable_nodes(self.graph.nodes, self.selected, "upstream")
+        downstream = reachable_nodes(self.graph.nodes, self.selected, "downstream")
         upstream_path = upstream | {self.selected}
         downstream_path = downstream | {self.selected}
         edges = set()
 
         for child in visible:
-            for parent in self.graph[child]["upstream"]:
+            for parent in self.graph.nodes[child].upstream:
                 if parent not in visible:
                     continue
                 on_upstream_path = parent in upstream and child in upstream_path
@@ -104,14 +152,14 @@ class LineageGraph(Widget, can_focus=True):
         visible: set[str],
     ) -> tuple[dict[str, tuple[int, int]], int, int]:
         grouped: dict[int, list[str]] = {}
-        for name, col in columns.items():
-            if name in visible:
-                grouped.setdefault(col, []).append(name)
-        for names in grouped.values():
-            names.sort()
+        for node_id, column in columns.items():
+            if node_id in visible:
+                grouped.setdefault(column, []).append(node_id)
+        for node_ids in grouped.values():
+            node_ids.sort(key=self.sort_key)
 
         ordered_columns = sorted(grouped)
-        max_rows = max((len(names) for names in grouped.values()), default=0)
+        max_rows = max((len(node_ids) for node_ids in grouped.values()), default=0)
         content_height = (
             max_rows * self.BOX_HEIGHT + max(max_rows - 1, 0) * self.ROW_GAP
         )
@@ -130,9 +178,9 @@ class LineageGraph(Widget, can_focus=True):
                 + max(len(grouped[column]) - 1, 0) * self.ROW_GAP
             )
             offset_y = self.PADDING_Y + max(0, (content_height - column_height) // 2)
-            for row_index, name in enumerate(grouped[column]):
+            for row_index, node_id in enumerate(grouped[column]):
                 y = offset_y + row_index * (self.BOX_HEIGHT + self.ROW_GAP)
-                positions[name] = (x, y)
+                positions[node_id] = (x, y)
 
         return positions, canvas_width, canvas_height
 
@@ -252,7 +300,10 @@ class LineageGraph(Widget, can_focus=True):
             self._set_cell(chars, styles, x + offset, y + 1, char, style)
 
     def _content_bounds(
-        self, positions: dict[str, tuple[int, int]], width: int, height: int
+        self,
+        positions: dict[str, tuple[int, int]],
+        width: int,
+        height: int,
     ) -> tuple[int, int, int, int]:
         if not positions:
             return (0, 0, width, height)
@@ -297,10 +348,12 @@ class LineageGraph(Widget, can_focus=True):
             selected_right = selected_x + self.BOX_WIDTH
             selected_bottom = selected_y + self.BOX_HEIGHT
             margin_x = min(
-                max((viewport_width - self.BOX_WIDTH) // 2, 0), self.BOX_WIDTH
+                max((viewport_width - self.BOX_WIDTH) // 2, 0),
+                self.BOX_WIDTH,
             )
             margin_y = min(
-                max((viewport_height - self.BOX_HEIGHT) // 2, 0), self.ROW_GAP + 1
+                max((viewport_height - self.BOX_HEIGHT) // 2, 0),
+                self.ROW_GAP + 1,
             )
 
             min_selected_x = origin_x + margin_x
@@ -332,7 +385,7 @@ class LineageGraph(Widget, can_focus=True):
         return Group(*lines)
 
     def render(self) -> Group:
-        columns = assign_columns(self.graph)
+        columns = assign_columns(self.graph.nodes)
         visible = self.visible_nodes()
         focused_edges = self.focused_edges(visible)
         positions, width, height = self._layout_nodes(columns, visible)
@@ -353,8 +406,15 @@ class LineageGraph(Widget, can_focus=True):
                     chars[y][x] = self.CONNECTOR_CHARS[frozenset(cell)]
                     styles[y][x] = self.CONNECTOR_STYLE
 
-        for name, (x, y) in positions.items():
-            self._draw_box(chars, styles, x, y, name, name == self.selected)
+        for node_id, (x, y) in positions.items():
+            self._draw_box(
+                chars,
+                styles,
+                x,
+                y,
+                self.graph.nodes[node_id].label,
+                node_id == self.selected,
+            )
 
         focus_point = self._focus_point(positions, width, height)
         return self._render_viewport(chars, styles, positions, focus_point)
@@ -362,41 +422,61 @@ class LineageGraph(Widget, can_focus=True):
 
 class Inspector(Static):
     @staticmethod
-    def _format_relations(names: list[str]) -> Text:
-        if not names:
+    def _format_relations(
+        graph: ManifestGraph,
+        node_ids: tuple[str, ...],
+    ) -> Text:
+        if not node_ids:
             return Text("none", style="dim")
-        return Text("\n".join(f"- {name}" for name in names), style="dim")
+
+        lines = [f"- {graph.nodes[node_id].label}" for node_id in node_ids]
+        return Text("\n".join(lines), style="dim")
 
     def show_model(
         self,
-        graph: dict,
-        name: str,
+        graph: ManifestGraph,
+        node_id: str,
         depth: int,
         visible: set[str],
         focus_mode: str,
+        view_mode: str,
         center: str,
-    ):
-        node = graph[name]
-        columns = assign_columns(graph)
-        title = Text(name, style="bold")
+    ) -> None:
+        node = graph.nodes[node_id]
+        columns = assign_columns(graph.nodes)
+        title = Text(node.label, style="bold")
+        file_path = Text(
+            str(node.file_path) if node.file_path else "file unavailable",
+            style="dim",
+        )
+        depth_label = str(depth)
+        view_label = (
+            "selected lineage"
+            if view_mode == LineageGraph.SELECTED_LINEAGE_VIEW
+            else "column window"
+        )
 
         details = Table.grid(padding=(0, 1))
         details.add_column(style="bold", width=10)
         details.add_column()
-        details.add_row("Type", str(node.get("type", "model")))
-        details.add_row("Package", "my_project")
-        details.add_row("Column", str(columns[name]))
-        details.add_row("Depth", str(depth))
+        details.add_row("Type", node.resource_type)
+        details.add_row("Package", node.package_name)
+        details.add_row("Project", graph.metadata.project_name)
+        details.add_row("Column", str(columns[node_id]))
+        details.add_row("Depth", depth_label)
+        details.add_row("View", view_label)
         details.add_row("Focus", focus_mode)
-        details.add_row("Center", center)
-        details.add_row("Visible", f"{len(visible)} of {len(graph)}")
+        details.add_row("Center", graph.nodes[center].label)
+        details.add_row("Visible", f"{len(visible)} of {len(graph.nodes)}")
 
-        upstream = self._format_relations(node["upstream"])
-        downstream = self._format_relations(node["downstream"])
+        upstream = self._format_relations(graph, node.upstream)
+        downstream = self._format_relations(graph, node.downstream)
 
         self.update(
             Group(
                 title,
+                Text(node.unique_id, style="dim"),
+                file_path,
                 Rule(style="dim"),
                 details,
                 Rule(title="Upstream", style="dim"),
@@ -407,7 +487,50 @@ class Inspector(Static):
         )
 
 
+class NodeSearchProvider(Provider):
+    async def discover(self) -> Hits:
+        app = cast(ModelNavigatorApp, self.app)
+
+        current = app.graph.nodes[app.current_selected]
+        yield DiscoveryHit(
+            f"Focus lineage: {current.label}",
+            partial(app.select_node, app.current_selected, isolate=True),
+            help="Show only the selected node's upstream and downstream lineage.",
+        )
+
+        for node_id in app.discovery_nodes():
+            node = app.graph.nodes[node_id]
+            yield DiscoveryHit(
+                f"Jump to {node.label}",
+                partial(app.select_node, node_id, isolate=True),
+                help=f"Select {node.resource_type} and isolate its lineage.",
+            )
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        app = cast(ModelNavigatorApp, self.app)
+
+        for node_id in app.searchable_nodes():
+            node = app.graph.nodes[node_id]
+            score = max(
+                matcher.match(node.label),
+                matcher.match(node.name),
+                matcher.match(node.unique_id),
+            )
+            if score <= 0:
+                continue
+
+            yield Hit(
+                score,
+                matcher.highlight(node.label),
+                partial(app.select_node, node_id, isolate=True),
+                help=f"Select {node.resource_type} and show only its lineage.",
+            )
+
+
 class ModelNavigatorApp(App[None]):
+    COMMANDS = App.COMMANDS | {NodeSearchProvider}
+
     CSS = """
     Screen {
         background: $background;
@@ -445,98 +568,28 @@ class ModelNavigatorApp(App[None]):
         ("right", "select_next", "Next"),
         ("up", "select_up", "Up"),
         ("down", "select_down", "Down"),
+        ("/", "command_palette", "Search"),
         ("f", "toggle_focus", "Focus"),
+        ("v", "toggle_view", "View"),
         ("[", "decrease_depth", "Depth-"),
         ("]", "increase_depth", "Depth+"),
         ("q", "quit", "Quit"),
     ]
 
-    FAKE_GRAPH = {
-        "raw_stripe_charges": {
-            "type": "source",
-            "upstream": [],
-            "downstream": ["stg_charges"],
-        },
-        "raw_stripe_refunds": {
-            "type": "source",
-            "upstream": [],
-            "downstream": ["stg_refunds"],
-        },
-        "raw_app_users": {
-            "type": "source",
-            "upstream": [],
-            "downstream": ["stg_users"],
-        },
-        "seed_exchange_rates": {
-            "type": "seed",
-            "upstream": [],
-            "downstream": ["dim_fx_rates"],
-        },
-        "stg_charges": {
-            "type": "model",
-            "upstream": ["raw_stripe_charges"],
-            "downstream": ["int_revenue"],
-        },
-        "stg_refunds": {
-            "type": "model",
-            "upstream": ["raw_stripe_refunds"],
-            "downstream": ["int_refunds"],
-        },
-        "stg_users": {
-            "type": "model",
-            "upstream": ["raw_app_users"],
-            "downstream": ["dim_customers"],
-        },
-        "int_revenue": {
-            "type": "model",
-            "upstream": ["stg_charges"],
-            "downstream": ["fct_payments"],
-        },
-        "int_refunds": {
-            "type": "model",
-            "upstream": ["stg_refunds"],
-            "downstream": ["fct_payments"],
-        },
-        "dim_customers": {
-            "type": "model",
-            "upstream": ["stg_users"],
-            "downstream": ["fct_payments", "mart_customer_ltv"],
-        },
-        "dim_fx_rates": {
-            "type": "model",
-            "upstream": ["seed_exchange_rates"],
-            "downstream": ["mart_revenue_daily"],
-        },
-        "fct_payments": {
-            "type": "model",
-            "upstream": ["int_revenue", "int_refunds", "dim_customers"],
-            "downstream": ["mart_revenue_daily", "mart_customer_ltv"],
-        },
-        "mart_revenue_daily": {
-            "type": "model",
-            "upstream": ["fct_payments", "dim_fx_rates"],
-            "downstream": ["dashboard_finance"],
-        },
-        "mart_customer_ltv": {
-            "type": "model",
-            "upstream": ["fct_payments", "dim_customers"],
-            "downstream": ["dashboard_customers"],
-        },
-        "dashboard_finance": {
-            "type": "exposure",
-            "upstream": ["mart_revenue_daily"],
-            "downstream": [],
-        },
-        "dashboard_customers": {
-            "type": "exposure",
-            "upstream": ["mart_customer_ltv"],
-            "downstream": [],
-        },
-    }
+    def __init__(
+        self,
+        graph: ManifestGraph,
+        initial_selected: str,
+        initial_depth: int,
+    ) -> None:
+        super().__init__()
+        self.graph = graph
+        self.initial_selected = initial_selected
+        self.initial_depth = max(initial_depth, 0)
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
-            yield LineageGraph(self.FAKE_GRAPH, "fct_payments")
+            yield LineageGraph(self.graph, self.initial_selected, self.initial_depth)
             yield Inspector("Inspector", id="inspector")
         yield Footer()
 
@@ -544,94 +597,186 @@ class ModelNavigatorApp(App[None]):
         self.title = "Model Navigator"
         self._refresh_selection()
 
-    def action_select_prev(self):
+    @property
+    def current_selected(self) -> str:
+        return self.query_one(LineageGraph).selected
+
+    def searchable_nodes(self) -> list[str]:
+        return sorted(
+            self.graph.nodes,
+            key=lambda node_id: (
+                self.graph.nodes[node_id].resource_type != "model",
+                self.graph.nodes[node_id].label.casefold(),
+            ),
+        )
+
+    def discovery_nodes(self) -> list[str]:
+        ranked = sorted(
+            self.graph.nodes,
+            key=lambda node_id: (
+                self.graph.nodes[node_id].resource_type != "model",
+                -(
+                    len(self.graph.nodes[node_id].upstream)
+                    + len(self.graph.nodes[node_id].downstream)
+                ),
+                self.graph.nodes[node_id].label.casefold(),
+            ),
+        )
+        return ranked[:10]
+
+    def get_system_commands(
+        self,
+        screen: Screen[object],
+    ) -> Iterable[SystemCommand]:
+        yield from super().get_system_commands(screen)
+        yield SystemCommand(
+            "Show selected lineage",
+            "Filter the graph to only the selected node's upstream and downstream lineage.",
+            self.show_selected_lineage,
+        )
+        yield SystemCommand(
+            "Show column window",
+            "Return to the wider column-window graph view.",
+            self.show_full_graph,
+        )
+
+    def action_select_prev(self) -> None:
         self._move_horizontal(-1)
 
-    def action_select_next(self):
+    def action_select_next(self) -> None:
         self._move_horizontal(1)
 
-    def _move_horizontal(self, direction: int):
-        graph = self.query_one(LineageGraph)
-        columns = assign_columns(graph.graph)
-        visible = graph.visible_nodes()
-        current_col = columns[graph.selected]
+    def _sorted_visible_nodes(
+        self,
+        graph_widget: LineageGraph,
+        visible: set[str],
+        column: int,
+        columns: dict[str, int],
+    ) -> list[str]:
+        return sorted(
+            (node_id for node_id in visible if columns[node_id] == column),
+            key=graph_widget.sort_key,
+        )
+
+    def _move_horizontal(self, direction: int) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        columns = assign_columns(graph_widget.graph.nodes)
+        visible = graph_widget.visible_nodes()
+        current_col = columns[graph_widget.selected]
         target_col = current_col + direction
-        siblings = sorted(name for name in visible if columns[name] == current_col)
-        current_row = siblings.index(graph.selected)
-        target_siblings = sorted(
-            name for name in visible if columns[name] == target_col
+        siblings = self._sorted_visible_nodes(
+            graph_widget,
+            visible,
+            current_col,
+            columns,
+        )
+        current_row = siblings.index(graph_widget.selected)
+        target_siblings = self._sorted_visible_nodes(
+            graph_widget,
+            visible,
+            target_col,
+            columns,
         )
         if not target_siblings:
             return
         target_row = min(current_row, len(target_siblings) - 1)
-        graph.selected = target_siblings[target_row]
+        graph_widget.selected = target_siblings[target_row]
         self._refresh_selection()
 
-    def action_select_up(self):
+    def action_select_up(self) -> None:
         self._move_vertical(-1)
 
-    def action_select_down(self):
+    def action_select_down(self) -> None:
         self._move_vertical(1)
 
-    def _move_vertical(self, direction: int):
-        graph = self.query_one(LineageGraph)
-        columns = assign_columns(graph.graph)
-        visible = graph.visible_nodes()
-        current_col = columns[graph.selected]
-        siblings = sorted(name for name in visible if columns[name] == current_col)
-        current_idx = siblings.index(graph.selected)
+    def _move_vertical(self, direction: int) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        columns = assign_columns(graph_widget.graph.nodes)
+        visible = graph_widget.visible_nodes()
+        current_col = columns[graph_widget.selected]
+        siblings = self._sorted_visible_nodes(
+            graph_widget,
+            visible,
+            current_col,
+            columns,
+        )
+        current_idx = siblings.index(graph_widget.selected)
         target_idx = current_idx + direction
         if 0 <= target_idx < len(siblings):
-            graph.selected = siblings[target_idx]
+            graph_widget.selected = siblings[target_idx]
             self._refresh_selection()
 
-    def action_decrease_depth(self):
-        graph = self.query_one(LineageGraph)
-        if graph.depth == 0:
+    def action_decrease_depth(self) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        if graph_widget.depth == 0:
             return
-        graph.depth -= 1
-        graph.ensure_selection_visible()
-        self.notify(f"Depth: {graph.depth}")
+        graph_widget.depth -= 1
+        graph_widget.ensure_selection_visible()
+        self.notify(f"Depth: {graph_widget.depth}")
         self._refresh_selection()
 
-    def action_increase_depth(self):
-        graph = self.query_one(LineageGraph)
-        max_depth = len(graph.graph) - 1
-        if graph.depth >= max_depth:
+    def action_increase_depth(self) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        max_depth = len(graph_widget.graph.nodes) - 1
+        if graph_widget.depth >= max_depth:
             return
-        graph.depth += 1
-        graph.ensure_selection_visible()
-        self.notify(f"Depth: {graph.depth}")
+        graph_widget.depth += 1
+        graph_widget.ensure_selection_visible()
+        self.notify(f"Depth: {graph_widget.depth}")
         self._refresh_selection()
 
-    def action_toggle_focus(self):
-        graph = self.query_one(LineageGraph)
+    def action_toggle_focus(self) -> None:
+        graph_widget = self.query_one(LineageGraph)
         next_mode = (
             LineageGraph.LINEAGE_FOCUS
-            if graph.focus_mode == LineageGraph.NODE_FOCUS
+            if graph_widget.focus_mode == LineageGraph.NODE_FOCUS
             else LineageGraph.NODE_FOCUS
         )
-        graph.set_focus_mode(next_mode)
-        self.notify(f"Focus: {graph.focus_mode}")
+        graph_widget.set_focus_mode(next_mode)
+        self.notify(f"Focus: {graph_widget.focus_mode}")
         self._refresh_selection()
 
-    def _refresh_selection(self):
-        graph = self.query_one(LineageGraph)
-        visible = graph.visible_nodes()
-        center = graph.visible_anchor()
-        self.sub_title = (
-            f"{graph.selected} | depth {graph.depth} | focus {graph.focus_mode}"
-        )
+    def action_toggle_view(self) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        if graph_widget.view_mode == LineageGraph.WINDOW_VIEW:
+            self.show_selected_lineage()
+        else:
+            self.show_full_graph()
+
+    def select_node(self, node_id: str, isolate: bool = False) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        graph_widget.selected = node_id
+        if isolate:
+            graph_widget.set_view_mode(LineageGraph.SELECTED_LINEAGE_VIEW)
+        graph_widget.ensure_selection_visible()
+        self._refresh_selection()
+
+    def show_selected_lineage(self) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        graph_widget.set_view_mode(LineageGraph.SELECTED_LINEAGE_VIEW)
+        self.notify("View: selected lineage")
+        self._refresh_selection()
+
+    def show_full_graph(self) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        graph_widget.set_view_mode(LineageGraph.WINDOW_VIEW)
+        graph_widget.ensure_selection_visible()
+        self.notify("View: column window")
+        self._refresh_selection()
+
+    def _refresh_selection(self) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        visible = graph_widget.visible_nodes()
+        center = graph_widget.visible_anchor()
+        selected_node: GraphNode = self.graph.nodes[graph_widget.selected]
+        depth_label = str(graph_widget.depth)
+        self.sub_title = f"{selected_node.label} | view {graph_widget.view_label()} | depth {depth_label} | focus {graph_widget.focus_mode}"
         self.query_one(Inspector).show_model(
-            graph.graph,
-            graph.selected,
-            graph.depth,
+            self.graph,
+            graph_widget.selected,
+            graph_widget.depth,
             visible,
-            graph.focus_mode,
+            graph_widget.focus_mode,
+            graph_widget.view_mode,
             center,
         )
-
-
-def main() -> None:
-    app = ModelNavigatorApp()
-    app.run()

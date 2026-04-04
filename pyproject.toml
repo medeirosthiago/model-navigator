@@ -22,3 +22,6 @@ dev = [
     "isort>=8.0.1",
     "ruff>=0.15.9",
 ]
+
+[tool.isort]
+profile = "black"
