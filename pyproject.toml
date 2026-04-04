@@ -3,7 +3,7 @@ name = "model-navigator"
 version = "0.1.0"
 description = "Terminal dbt lineage navigator"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "rich>=14.0.0",
     "textual>=8.0.0",
