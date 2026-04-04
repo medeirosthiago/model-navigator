@@ -1,3 +1,7 @@
+import os
+import shlex
+import shutil
+import subprocess
 from functools import partial
 from typing import Iterable, cast
 
@@ -568,6 +572,7 @@ class ModelNavigatorApp(App[None]):
         ("right", "select_next", "Next"),
         ("up", "select_up", "Up"),
         ("down", "select_down", "Down"),
+        ("enter", "open_selected", "Open"),
         ("/", "command_palette", "Search"),
         ("f", "toggle_focus", "Focus"),
         ("v", "toggle_view", "View"),
@@ -743,6 +748,50 @@ class ModelNavigatorApp(App[None]):
         else:
             self.show_full_graph()
 
+    def action_open_selected(self) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        node = self.graph.nodes[graph_widget.selected]
+        if node.file_path is None:
+            self.notify(
+                "This node does not have a file path in the manifest.",
+                severity="warning",
+            )
+            return
+        if not node.file_path.exists():
+            self.notify(f"File does not exist: {node.file_path}", severity="warning")
+            return
+
+        editor_command = _resolve_editor_command()
+        if editor_command is None:
+            self.notify(
+                "Set $EDITOR or install nvim, vim, or vi to open files.",
+                severity="warning",
+            )
+            return
+
+        command = [*editor_command, str(node.file_path)]
+
+        try:
+            if _editor_runs_in_terminal(editor_command):
+                # Suspend the app so a terminal editor can take over cleanly.
+                with self.suspend():
+                    subprocess.run(command, check=False)
+            else:
+                # GUI editors can open above an integrated terminal without blanking the TUI.
+                subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        except Exception as error:  # pragma: no cover - defensive runtime path
+            self.notify(f"Could not open editor: {error}", severity="error")
+            return
+
+        graph_widget.refresh()
+        self._refresh_selection()
+
     def select_node(self, node_id: str, isolate: bool = False) -> None:
         graph_widget = self.query_one(LineageGraph)
         graph_widget.selected = node_id
@@ -780,3 +829,19 @@ class ModelNavigatorApp(App[None]):
             graph_widget.view_mode,
             center,
         )
+
+
+def _resolve_editor_command() -> list[str] | None:
+    for variable in ("VISUAL", "EDITOR"):
+        editor = os.environ.get(variable)
+        if editor:
+            return shlex.split(editor)
+    for candidate in ("nvim", "vim", "vi"):
+        if shutil.which(candidate):
+            return [candidate]
+    return None
+
+
+def _editor_runs_in_terminal(editor_command: list[str]) -> bool:
+    editor_name = os.path.basename(editor_command[0]).casefold()
+    return editor_name not in {"cursor", "zed"}
