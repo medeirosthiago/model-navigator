@@ -2,6 +2,24 @@
 
 Terminal dbt lineage explorer built with Textual, Rich, and real dbt metadata.
 
+## Installation
+
+Install directly from GitHub:
+
+```bash
+uv tool install git+https://github.com/medeirosthiago/model-navigator.git
+```
+
+```bash
+pipx install "git+https://github.com/medeirosthiago/model-navigator.git"
+```
+
+If you prefer plain pip:
+
+```bash
+pip install "git+https://github.com/medeirosthiago/model-navigator.git"
+```
+
 ## Usage
 
 ```bash
@@ -17,7 +35,7 @@ For dense projects, you can switch between two graph views:
 - `column window`: the original wide slice around the current anchor
 - `selected lineage`: only the selected node's lineage, still filtered by the current depth window
 
-Use `/` or `Ctrl+P` to open the command palette, fuzzy-search a model, and jump directly into its focused lineage view. Use `v` to toggle between the two graph views, with `selected lineage` as the default.
+Use `/` to open the command palette, fuzzy-search a model, and jump directly into its focused lineage view. Use `v` to toggle between the two graph views, with `selected lineage` as the default.
 
 Press `Enter` to open the selected node's file in `$EDITOR`. Terminal editors such as `vim` take over the current terminal session and return you to the same graph state when you exit. GUI editors such as `zed` and `cursor` open without blanking the TUI, which keeps rendering in the integrated terminal underneath.
 
