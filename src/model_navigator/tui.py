@@ -1,18 +1,49 @@
-from model_navigator.lineage import assign_columns, nodes_with_depth
+from model_navigator.lineage import assign_columns, nodes_with_depth, reachable_nodes
 from rich.console import Group
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Static
-from textual.widget import Widget
+from textual.containers import Horizontal
 from textual.reactive import reactive
+from textual.widget import Widget
+from textual.widgets import Footer, Static
 
 
 class LineageGraph(Widget, can_focus=True):
-    selected = reactive("", recompose=True)
-    depth = reactive(2, recompose=True)
+    BOX_WIDTH = 24
+    BOX_HEIGHT = 3
+    COLUMN_GAP = 8
+    ROW_GAP = 2
+    PADDING_X = 2
+    PADDING_Y = 1
+    CONNECTOR_STYLE = "#7f8fa6"
+    BOX_FILL_STYLE = "on #253341"
+    BOX_BORDER_STYLE = "#4f6375 on #253341"
+    BOX_LABEL_STYLE = "#e6edf3 on #253341"
+    SELECTED_BORDER_STYLE = "bold #ffb454 on #253341"
+    SELECTED_LABEL_STYLE = "bold #f8fafc on #253341"
+    CONNECTOR_CHARS = {
+        frozenset(): " ",
+        frozenset({"l"}): "─",
+        frozenset({"r"}): "─",
+        frozenset({"u"}): "│",
+        frozenset({"d"}): "│",
+        frozenset({"l", "r"}): "─",
+        frozenset({"u", "d"}): "│",
+        frozenset({"r", "d"}): "┌",
+        frozenset({"l", "d"}): "┐",
+        frozenset({"r", "u"}): "└",
+        frozenset({"l", "u"}): "┘",
+        frozenset({"l", "r", "d"}): "┬",
+        frozenset({"l", "r", "u"}): "┴",
+        frozenset({"u", "d", "r"}): "├",
+        frozenset({"u", "d", "l"}): "┤",
+        frozenset({"u", "d", "l", "r"}): "┼",
+    }
+
+    selected = reactive("")
+    depth = reactive(2)
 
     def __init__(self, graph: dict, selected: str):
         super().__init__(id="graph")
@@ -22,22 +53,216 @@ class LineageGraph(Widget, can_focus=True):
     def visible_nodes(self) -> set[str]:
         return nodes_with_depth(self.graph, self.selected, self.depth)
 
-    def compose(self) -> ComposeResult:
-        columns = assign_columns(self.graph)
-        visible = self.visible_nodes()
+    def focused_edges(self, visible: set[str]) -> set[tuple[str, str]]:
+        upstream = reachable_nodes(self.graph, self.selected, "upstream")
+        downstream = reachable_nodes(self.graph, self.selected, "downstream")
+        upstream_path = upstream | {self.selected}
+        downstream_path = downstream | {self.selected}
+        edges = set()
+
+        for child in visible:
+            for parent in self.graph[child]["upstream"]:
+                if parent not in visible:
+                    continue
+                on_upstream_path = parent in upstream and child in upstream_path
+                on_downstream_path = parent in downstream_path and child in downstream
+                if on_upstream_path or on_downstream_path:
+                    edges.add((parent, child))
+
+        return edges
+
+    @staticmethod
+    def _truncate_label(label: str, limit: int) -> str:
+        if len(label) <= limit:
+            return label
+        return f"{label[: limit - 3]}..."
+
+    def _layout_nodes(
+        self,
+        columns: dict[str, int],
+        visible: set[str],
+    ) -> tuple[dict[str, tuple[int, int]], int, int]:
         grouped: dict[int, list[str]] = {}
         for name, col in columns.items():
             if name in visible:
                 grouped.setdefault(col, []).append(name)
+        for names in grouped.values():
+            names.sort()
 
-        with Horizontal(id="columns"):
-            for col_idx in sorted(grouped):
-                with Vertical(classes="graph-column"):
-                    for name in sorted(grouped[col_idx]):
-                        classes = (
-                            "node-box selected" if name == self.selected else "node-box"
-                        )
-                        yield Static(name, classes=classes)
+        ordered_columns = sorted(grouped)
+        max_rows = max((len(names) for names in grouped.values()), default=0)
+        content_height = (
+            max_rows * self.BOX_HEIGHT + max(max_rows - 1, 0) * self.ROW_GAP
+        )
+        canvas_width = (
+            self.PADDING_X * 2
+            + len(ordered_columns) * self.BOX_WIDTH
+            + max(len(ordered_columns) - 1, 0) * self.COLUMN_GAP
+        )
+        canvas_height = self.PADDING_Y * 2 + content_height
+
+        positions: dict[str, tuple[int, int]] = {}
+        for column_index, column in enumerate(ordered_columns):
+            x = self.PADDING_X + column_index * (self.BOX_WIDTH + self.COLUMN_GAP)
+            column_height = (
+                len(grouped[column]) * self.BOX_HEIGHT
+                + max(len(grouped[column]) - 1, 0) * self.ROW_GAP
+            )
+            offset_y = self.PADDING_Y + max(0, (content_height - column_height) // 2)
+            for row_index, name in enumerate(grouped[column]):
+                y = offset_y + row_index * (self.BOX_HEIGHT + self.ROW_GAP)
+                positions[name] = (x, y)
+
+        return positions, canvas_width, canvas_height
+
+    def _add_segment(
+        self,
+        directions: list[list[set[str]]],
+        start: tuple[int, int],
+        end: tuple[int, int],
+    ) -> None:
+        x1, y1 = start
+        x2, y2 = end
+
+        if x1 == x2:
+            step = 1 if y2 > y1 else -1
+            y = y1
+            while y != y2:
+                next_y = y + step
+                directions[y][x1].add("d" if step > 0 else "u")
+                directions[next_y][x1].add("u" if step > 0 else "d")
+                y = next_y
+            return
+
+        step = 1 if x2 > x1 else -1
+        x = x1
+        while x != x2:
+            next_x = x + step
+            directions[y1][x].add("r" if step > 0 else "l")
+            directions[y1][next_x].add("l" if step > 0 else "r")
+            x = next_x
+
+    def _draw_edge(
+        self,
+        directions: list[list[set[str]]],
+        start: tuple[int, int],
+        end: tuple[int, int],
+    ) -> None:
+        x1, y1 = start
+        x2, y2 = end
+        if x2 < x1:
+            return
+        if y1 == y2:
+            self._add_segment(directions, start, end)
+            return
+        mid_x = x1 + max(1, (x2 - x1) // 2)
+        self._add_segment(directions, start, (mid_x, y1))
+        self._add_segment(directions, (mid_x, y1), (mid_x, y2))
+        self._add_segment(directions, (mid_x, y2), end)
+
+    @staticmethod
+    def _set_cell(
+        chars: list[list[str]],
+        styles: list[list[str]],
+        x: int,
+        y: int,
+        char: str,
+        style: str,
+    ) -> None:
+        if 0 <= y < len(chars) and 0 <= x < len(chars[y]):
+            chars[y][x] = char
+            styles[y][x] = style
+
+    def _draw_box(
+        self,
+        chars: list[list[str]],
+        styles: list[list[str]],
+        x: int,
+        y: int,
+        label: str,
+        selected: bool,
+    ) -> None:
+        border_style = self.SELECTED_BORDER_STYLE if selected else self.BOX_BORDER_STYLE
+        label_style = self.SELECTED_LABEL_STYLE if selected else self.BOX_LABEL_STYLE
+        text = self._truncate_label(label, self.BOX_WIDTH - 2).center(
+            self.BOX_WIDTH - 2
+        )
+
+        for offset in range(1, self.BOX_WIDTH - 1):
+            self._set_cell(chars, styles, x + offset, y, "─", border_style)
+            self._set_cell(
+                chars,
+                styles,
+                x + offset,
+                y + self.BOX_HEIGHT - 1,
+                "─",
+                border_style,
+            )
+        self._set_cell(chars, styles, x, y, "╭", border_style)
+        self._set_cell(chars, styles, x + self.BOX_WIDTH - 1, y, "╮", border_style)
+        self._set_cell(
+            chars,
+            styles,
+            x,
+            y + self.BOX_HEIGHT - 1,
+            "╰",
+            border_style,
+        )
+        self._set_cell(
+            chars,
+            styles,
+            x + self.BOX_WIDTH - 1,
+            y + self.BOX_HEIGHT - 1,
+            "╯",
+            border_style,
+        )
+
+        self._set_cell(chars, styles, x, y + 1, "│", border_style)
+        self._set_cell(
+            chars,
+            styles,
+            x + self.BOX_WIDTH - 1,
+            y + 1,
+            "│",
+            border_style,
+        )
+        for offset, char in enumerate(text, start=1):
+            style = label_style if char.strip() else self.BOX_FILL_STYLE
+            self._set_cell(chars, styles, x + offset, y + 1, char, style)
+
+    def render(self) -> Group:
+        columns = assign_columns(self.graph)
+        visible = self.visible_nodes()
+        focused_edges = self.focused_edges(visible)
+        positions, width, height = self._layout_nodes(columns, visible)
+        chars = [[" " for _ in range(width)] for _ in range(height)]
+        styles = [["" for _ in range(width)] for _ in range(height)]
+        directions = [[set() for _ in range(width)] for _ in range(height)]
+
+        for parent, child in focused_edges:
+            child_x, child_y = positions[child]
+            end = (child_x - 1, child_y + self.BOX_HEIGHT // 2)
+            parent_x, parent_y = positions[parent]
+            start = (parent_x + self.BOX_WIDTH, parent_y + self.BOX_HEIGHT // 2)
+            self._draw_edge(directions, start, end)
+
+        for y, row in enumerate(directions):
+            for x, cell in enumerate(row):
+                if cell:
+                    chars[y][x] = self.CONNECTOR_CHARS[frozenset(cell)]
+                    styles[y][x] = self.CONNECTOR_STYLE
+
+        for name, (x, y) in positions.items():
+            self._draw_box(chars, styles, x, y, name, name == self.selected)
+
+        lines: list[Text] = []
+        for row_chars, row_styles in zip(chars, styles, strict=False):
+            line = Text(no_wrap=True, overflow="ignore")
+            for char, style in zip(row_chars, row_styles, strict=False):
+                line.append(char, style)
+            lines.append(line)
+
+        return Group(*lines)
 
 
 class Inspector(Static):
@@ -95,33 +320,6 @@ class ModelNavigatorApp(App[None]):
         align: center middle;
         border: round $secondary;
         background: $surface;
-    }
-
-    #columns {
-        width: 1fr;
-        height: 1fr;
-        align: center middle;
-    }
-
-    .graph-column {
-        width: auto;
-        height: auto;
-        align: center middle;
-    }
-
-    .node-box {
-        width: 24;
-        height: 3;
-        content-align: center middle;
-        border: round $surface-lighten-2;
-        background: $panel;
-        margin: 1;
-    }
-
-    .node-box.selected {
-        border: round $accent;
-        background: $boost;
-        text-style: bold;
     }
 
     #inspector {

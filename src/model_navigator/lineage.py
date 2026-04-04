@@ -26,3 +26,18 @@ def nodes_with_depth(graph: dict, selected: str, depth: int) -> set[str]:
     return {
         name for name, column in columns.items() if min_column <= column <= max_column
     }
+
+
+def reachable_nodes(graph: dict, selected: str, direction: str) -> set[str]:
+    seen = set()
+    frontier = [selected]
+
+    while frontier:
+        name = frontier.pop()
+        for neighbor in graph[name][direction]:
+            if neighbor in seen:
+                continue
+            seen.add(neighbor)
+            frontier.append(neighbor)
+
+    return seen
