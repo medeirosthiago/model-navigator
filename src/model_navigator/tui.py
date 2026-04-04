@@ -11,6 +11,8 @@ from textual.widgets import Footer, Static
 
 
 class LineageGraph(Widget, can_focus=True):
+    NODE_FOCUS = "node"
+    LINEAGE_FOCUS = "lineage"
     BOX_WIDTH = 24
     BOX_HEIGHT = 3
     COLUMN_GAP = 8
@@ -44,14 +46,33 @@ class LineageGraph(Widget, can_focus=True):
 
     selected = reactive("")
     depth = reactive(2)
+    focus_mode = reactive(NODE_FOCUS)
 
     def __init__(self, graph: dict, selected: str):
         super().__init__(id="graph")
         self.graph = graph
         self.selected = selected
+        self.lineage_anchor = selected
+
+    def visible_anchor(self) -> str:
+        if self.focus_mode == self.LINEAGE_FOCUS:
+            return self.lineage_anchor
+        return self.selected
 
     def visible_nodes(self) -> set[str]:
-        return nodes_with_depth(self.graph, self.selected, self.depth)
+        return nodes_with_depth(self.graph, self.visible_anchor(), self.depth)
+
+    def set_focus_mode(self, mode: str) -> None:
+        if mode == self.LINEAGE_FOCUS:
+            self.lineage_anchor = self.selected
+        self.focus_mode = mode
+
+    def ensure_selection_visible(self) -> None:
+        if self.focus_mode != self.LINEAGE_FOCUS:
+            return
+        columns = assign_columns(self.graph)
+        if abs(columns[self.selected] - columns[self.lineage_anchor]) > self.depth:
+            self.lineage_anchor = self.selected
 
     def focused_edges(self, visible: set[str]) -> set[tuple[str, str]]:
         upstream = reachable_nodes(self.graph, self.selected, "upstream")
@@ -230,6 +251,86 @@ class LineageGraph(Widget, can_focus=True):
             style = label_style if char.strip() else self.BOX_FILL_STYLE
             self._set_cell(chars, styles, x + offset, y + 1, char, style)
 
+    def _content_bounds(
+        self, positions: dict[str, tuple[int, int]], width: int, height: int
+    ) -> tuple[int, int, int, int]:
+        if not positions:
+            return (0, 0, width, height)
+
+        min_x = min(x for x, _ in positions.values())
+        min_y = min(y for _, y in positions.values())
+        max_x = max(x + self.BOX_WIDTH for x, _ in positions.values())
+        max_y = max(y + self.BOX_HEIGHT for _, y in positions.values())
+        return min_x, min_y, max_x, max_y
+
+    def _focus_point(
+        self,
+        positions: dict[str, tuple[int, int]],
+        width: int,
+        height: int,
+    ) -> tuple[int, int]:
+        if self.focus_mode == self.NODE_FOCUS and self.selected in positions:
+            selected_x, selected_y = positions[self.selected]
+            return (
+                selected_x + self.BOX_WIDTH // 2,
+                selected_y + self.BOX_HEIGHT // 2,
+            )
+
+        min_x, min_y, max_x, max_y = self._content_bounds(positions, width, height)
+        return ((min_x + max_x) // 2, (min_y + max_y) // 2)
+
+    def _render_viewport(
+        self,
+        chars: list[list[str]],
+        styles: list[list[str]],
+        positions: dict[str, tuple[int, int]],
+        focus_point: tuple[int, int],
+    ) -> Group:
+        viewport_width = max(self.size.width, 1)
+        viewport_height = max(self.size.height, 1)
+        focus_x, focus_y = focus_point
+        origin_x = focus_x - viewport_width // 2
+        origin_y = focus_y - viewport_height // 2
+
+        if self.focus_mode == self.LINEAGE_FOCUS and self.selected in positions:
+            selected_x, selected_y = positions[self.selected]
+            selected_right = selected_x + self.BOX_WIDTH
+            selected_bottom = selected_y + self.BOX_HEIGHT
+            margin_x = min(
+                max((viewport_width - self.BOX_WIDTH) // 2, 0), self.BOX_WIDTH
+            )
+            margin_y = min(
+                max((viewport_height - self.BOX_HEIGHT) // 2, 0), self.ROW_GAP + 1
+            )
+
+            min_selected_x = origin_x + margin_x
+            max_selected_right = origin_x + viewport_width - margin_x
+            if selected_x < min_selected_x:
+                origin_x = selected_x - margin_x
+            elif selected_right > max_selected_right:
+                origin_x = selected_right + margin_x - viewport_width
+
+            min_selected_y = origin_y + margin_y
+            max_selected_bottom = origin_y + viewport_height - margin_y
+            if selected_y < min_selected_y:
+                origin_y = selected_y - margin_y
+            elif selected_bottom > max_selected_bottom:
+                origin_y = selected_bottom + margin_y - viewport_height
+
+        lines: list[Text] = []
+        for viewport_y in range(viewport_height):
+            canvas_y = origin_y + viewport_y
+            line = Text(no_wrap=True, overflow="ignore")
+            for viewport_x in range(viewport_width):
+                canvas_x = origin_x + viewport_x
+                if 0 <= canvas_y < len(chars) and 0 <= canvas_x < len(chars[canvas_y]):
+                    line.append(chars[canvas_y][canvas_x], styles[canvas_y][canvas_x])
+                else:
+                    line.append(" ")
+            lines.append(line)
+
+        return Group(*lines)
+
     def render(self) -> Group:
         columns = assign_columns(self.graph)
         visible = self.visible_nodes()
@@ -255,14 +356,8 @@ class LineageGraph(Widget, can_focus=True):
         for name, (x, y) in positions.items():
             self._draw_box(chars, styles, x, y, name, name == self.selected)
 
-        lines: list[Text] = []
-        for row_chars, row_styles in zip(chars, styles, strict=False):
-            line = Text(no_wrap=True, overflow="ignore")
-            for char, style in zip(row_chars, row_styles, strict=False):
-                line.append(char, style)
-            lines.append(line)
-
-        return Group(*lines)
+        focus_point = self._focus_point(positions, width, height)
+        return self._render_viewport(chars, styles, positions, focus_point)
 
 
 class Inspector(Static):
@@ -272,10 +367,17 @@ class Inspector(Static):
             return Text("none", style="dim")
         return Text("\n".join(f"- {name}" for name in names), style="dim")
 
-    def show_model(self, graph: dict, name: str, depth: int):
+    def show_model(
+        self,
+        graph: dict,
+        name: str,
+        depth: int,
+        visible: set[str],
+        focus_mode: str,
+        center: str,
+    ):
         node = graph[name]
         columns = assign_columns(graph)
-        visible = nodes_with_depth(graph, name, depth)
         title = Text(name, style="bold")
 
         details = Table.grid(padding=(0, 1))
@@ -285,6 +387,8 @@ class Inspector(Static):
         details.add_row("Package", "my_project")
         details.add_row("Column", str(columns[name]))
         details.add_row("Depth", str(depth))
+        details.add_row("Focus", focus_mode)
+        details.add_row("Center", center)
         details.add_row("Visible", f"{len(visible)} of {len(graph)}")
 
         upstream = self._format_relations(node["upstream"])
@@ -341,6 +445,7 @@ class ModelNavigatorApp(App[None]):
         ("right", "select_next", "Next"),
         ("up", "select_up", "Up"),
         ("down", "select_down", "Down"),
+        ("f", "toggle_focus", "Focus"),
         ("[", "decrease_depth", "Depth-"),
         ("]", "increase_depth", "Depth+"),
         ("q", "quit", "Quit"),
@@ -485,6 +590,7 @@ class ModelNavigatorApp(App[None]):
         if graph.depth == 0:
             return
         graph.depth -= 1
+        graph.ensure_selection_visible()
         self.notify(f"Depth: {graph.depth}")
         self._refresh_selection()
 
@@ -494,13 +600,36 @@ class ModelNavigatorApp(App[None]):
         if graph.depth >= max_depth:
             return
         graph.depth += 1
+        graph.ensure_selection_visible()
         self.notify(f"Depth: {graph.depth}")
+        self._refresh_selection()
+
+    def action_toggle_focus(self):
+        graph = self.query_one(LineageGraph)
+        next_mode = (
+            LineageGraph.LINEAGE_FOCUS
+            if graph.focus_mode == LineageGraph.NODE_FOCUS
+            else LineageGraph.NODE_FOCUS
+        )
+        graph.set_focus_mode(next_mode)
+        self.notify(f"Focus: {graph.focus_mode}")
         self._refresh_selection()
 
     def _refresh_selection(self):
         graph = self.query_one(LineageGraph)
-        self.sub_title = f"{graph.selected} | depth {graph.depth}"
-        self.query_one(Inspector).show_model(graph.graph, graph.selected, graph.depth)
+        visible = graph.visible_nodes()
+        center = graph.visible_anchor()
+        self.sub_title = (
+            f"{graph.selected} | depth {graph.depth} | focus {graph.focus_mode}"
+        )
+        self.query_one(Inspector).show_model(
+            graph.graph,
+            graph.selected,
+            graph.depth,
+            visible,
+            graph.focus_mode,
+            center,
+        )
 
 
 def main() -> None:
