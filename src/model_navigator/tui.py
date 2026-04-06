@@ -2,20 +2,19 @@ import os
 import shlex
 import shutil
 import subprocess
-from functools import partial
-from typing import Iterable, cast
 
 from rich.console import Group
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
-from textual.app import App, ComposeResult, SystemCommand
-from textual.command import DiscoveryHit, Hit, Hits, Provider
-from textual.containers import Horizontal
+from textual import on
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.events import Key
 from textual.reactive import reactive
-from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Footer, Static
+from textual.widgets import Input, OptionList, Static
 
 from .dbt_graph import GraphNode, ManifestGraph
 from .lineage import assign_columns, nodes_with_depth, reachable_nodes, selected_lineage
@@ -32,12 +31,12 @@ class LineageGraph(Widget, can_focus=True):
     ROW_GAP = 2
     PADDING_X = 2
     PADDING_Y = 1
-    CONNECTOR_STYLE = "#7f8fa6"
-    BOX_FILL_STYLE = "on #253341"
-    BOX_BORDER_STYLE = "#4f6375 on #253341"
-    BOX_LABEL_STYLE = "#e6edf3 on #253341"
-    SELECTED_BORDER_STYLE = "bold #ffb454 on #253341"
-    SELECTED_LABEL_STYLE = "bold #f8fafc on #253341"
+    CONNECTOR_STYLE = "#a0a0a0"
+    BOX_FILL_STYLE = "on #1e1e1e"
+    BOX_BORDER_STYLE = "#555555 on #1e1e1e"
+    BOX_LABEL_STYLE = "#e0e0e0 on #1e1e1e"
+    SELECTED_BORDER_STYLE = "bold #0178d4 on #1e1e1e"
+    SELECTED_LABEL_STYLE = "bold #ffffff on #1e1e1e"
     CONNECTOR_CHARS = {
         frozenset(): " ",
         frozenset({"l"}): "─",
@@ -491,49 +490,9 @@ class Inspector(Static):
         )
 
 
-class NodeSearchProvider(Provider):
-    async def discover(self) -> Hits:
-        app = cast(ModelNavigatorApp, self.app)
-
-        current = app.graph.nodes[app.current_selected]
-        yield DiscoveryHit(
-            f"Focus lineage: {current.label}",
-            partial(app.select_node, app.current_selected, isolate=True),
-            help="Show only the selected node's upstream and downstream lineage.",
-        )
-
-        for node_id in app.discovery_nodes():
-            node = app.graph.nodes[node_id]
-            yield DiscoveryHit(
-                f"Jump to {node.label}",
-                partial(app.select_node, node_id, isolate=True),
-                help=f"Select {node.resource_type} and isolate its lineage.",
-            )
-
-    async def search(self, query: str) -> Hits:
-        matcher = self.matcher(query)
-        app = cast(ModelNavigatorApp, self.app)
-
-        for node_id in app.searchable_nodes():
-            node = app.graph.nodes[node_id]
-            score = max(
-                matcher.match(node.label),
-                matcher.match(node.name),
-                matcher.match(node.unique_id),
-            )
-            if score <= 0:
-                continue
-
-            yield Hit(
-                score,
-                matcher.highlight(node.label),
-                partial(app.select_node, node_id, isolate=True),
-                help=f"Select {node.resource_type} and show only its lineage.",
-            )
-
-
 class ModelNavigatorApp(App[None]):
-    COMMANDS = App.COMMANDS | {NodeSearchProvider}
+    ENABLE_COMMAND_PALETTE = False
+    ESCAPE_TO_MINIMIZE = False
 
     CSS = """
     Screen {
@@ -549,36 +508,44 @@ class ModelNavigatorApp(App[None]):
         width: 1fr;
         height: 1fr;
         align: center middle;
-        border: round $secondary;
+        border: tall $accent;
         background: $surface;
     }
 
     #inspector {
         width: 38;
         height: 1fr;
-        border: round $secondary;
+        border: tall $accent;
         background: $surface;
         padding: 1 2;
     }
 
-    Footer {
-        background: $background;
-        color: $secondary;
+    #node-picker {
+        display: none;
+        height: auto;
+        max-height: 16;
+        border: tall $accent;
+    }
+    #node-filter {
+        height: 3;
+    }
+    #node-list {
+        height: auto;
+        max-height: 12;
     }
     """
 
     BINDINGS = [
-        ("left", "select_prev", "Previous"),
-        ("right", "select_next", "Next"),
-        ("up", "select_up", "Up"),
-        ("down", "select_down", "Down"),
-        ("enter", "open_selected", "Open"),
-        ("/", "command_palette", "Search"),
-        ("f", "toggle_focus", "Focus"),
-        ("v", "toggle_view", "View"),
-        ("[", "decrease_depth", "Depth-"),
-        ("]", "increase_depth", "Depth+"),
-        ("q", "quit", "Quit"),
+        Binding("left", "select_prev", "Previous", show=False),
+        Binding("right", "select_next", "Next", show=False),
+        Binding("up", "select_up", "Up", show=False),
+        Binding("down", "select_down", "Down", show=False),
+        Binding("enter", "open_selected", "Open", show=False),
+        Binding("slash", "open_node_picker", "Search", show=False),
+        Binding("f", "toggle_focus", "Focus", show=False),
+        Binding("v", "toggle_view", "View", show=False),
+        Binding("bracketleft", "decrease_depth", "Depth-", show=False),
+        Binding("bracketright", "increase_depth", "Depth+", show=False),
     ]
 
     def __init__(
@@ -591,12 +558,15 @@ class ModelNavigatorApp(App[None]):
         self.graph = graph
         self.initial_selected = initial_selected
         self.initial_depth = max(initial_depth, 0)
+        self._filtered_nodes: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
             yield LineageGraph(self.graph, self.initial_selected, self.initial_depth)
             yield Inspector("Inspector", id="inspector")
-        yield Footer()
+        with Vertical(id="node-picker"):
+            yield Input(placeholder="Search nodes…", id="node-filter")
+            yield OptionList(id="node-list")
 
     def on_mount(self) -> None:
         self.title = "Model Navigator"
@@ -629,21 +599,97 @@ class ModelNavigatorApp(App[None]):
         )
         return ranked[:10]
 
-    def get_system_commands(
-        self,
-        screen: Screen[object],
-    ) -> Iterable[SystemCommand]:
-        yield from super().get_system_commands(screen)
-        yield SystemCommand(
-            "Show selected lineage",
-            "Filter the graph to only the selected node's upstream and downstream lineage.",
-            self.show_selected_lineage,
-        )
-        yield SystemCommand(
-            "Show column window",
-            "Return to the wider column-window graph view.",
-            self.show_full_graph,
-        )
+    def on_key(self, event: Key) -> None:
+        if self._picker_active():
+            if event.key == "escape":
+                self._dismiss_picker()
+                event.prevent_default()
+                event.stop()
+            elif event.key in ("down", "up"):
+                self._navigate_option_list(event)
+            return
+
+        if event.key == "h":
+            self.action_select_prev()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "j":
+            self.action_select_down()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "k":
+            self.action_select_up()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "l":
+            self.action_select_next()
+            event.prevent_default()
+            event.stop()
+
+    def _picker_active(self) -> bool:
+        return self.query_one("#node-picker", Vertical).display
+
+    def _dismiss_picker(self) -> None:
+        self.query_one("#node-picker", Vertical).display = False
+        self.query_one(LineageGraph).focus()
+
+    def _navigate_option_list(self, event: Key) -> None:
+        opt = self.query_one("#node-list", OptionList)
+        if opt.option_count == 0:
+            return
+        idx = opt.highlighted or 0
+        if event.key == "down":
+            opt.highlighted = min(idx + 1, opt.option_count - 1)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "up":
+            opt.highlighted = max(idx - 1, 0)
+            event.prevent_default()
+            event.stop()
+
+    def action_open_node_picker(self) -> None:
+        picker = self.query_one("#node-picker", Vertical)
+        inp = self.query_one("#node-filter", Input)
+        inp.value = ""
+        picker.display = True
+        self._populate_node_list("")
+        inp.focus()
+
+    def _populate_node_list(self, query: str) -> None:
+        opt = self.query_one("#node-list", OptionList)
+        opt.clear_options()
+        self._filtered_nodes.clear()
+        q = query.strip().lower()
+        for node_id in self.searchable_nodes():
+            node = self.graph.nodes[node_id]
+            if not q or q in node.label.lower() or q in node.name.lower():
+                opt.add_option(node.label)
+                self._filtered_nodes.append(node_id)
+        if self._filtered_nodes:
+            opt.highlighted = 0
+
+    @on(Input.Changed, "#node-filter")
+    def _on_node_filter_changed(self, event: Input.Changed) -> None:
+        self._populate_node_list(event.value)
+
+    @on(Input.Submitted, "#node-filter")
+    def _on_node_filter_submitted(self, event: Input.Submitted) -> None:
+        opt = self.query_one("#node-list", OptionList)
+        if self._filtered_nodes and opt.highlighted is not None:
+            self._select_filtered_node(opt.highlighted)
+        else:
+            self._dismiss_picker()
+
+    @on(OptionList.OptionSelected, "#node-list")
+    def _on_node_selected(self, event: OptionList.OptionSelected) -> None:
+        self._select_filtered_node(event.option_index)
+
+    def _select_filtered_node(self, option_idx: int) -> None:
+        if option_idx < 0 or option_idx >= len(self._filtered_nodes):
+            return
+        node_id = self._filtered_nodes[option_idx]
+        self._dismiss_picker()
+        self.select_node(node_id, isolate=True)
 
     def action_select_prev(self) -> None:
         self._move_horizontal(-1)
