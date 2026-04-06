@@ -527,7 +527,7 @@ class HelpScreen(Screen):
     """
 
     def compose(self) -> ComposeResult:
-        yield Static(HELP_TEXT)
+        yield Static(HELP_TEXT, markup=False)
 
 
 class ModelNavigatorApp(App[None]):
