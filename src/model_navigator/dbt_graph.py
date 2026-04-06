@@ -44,7 +44,7 @@ SKIP_DISCOVERY_DIRS = {
     "node_modules",
     "site-packages",
 }
-MANIFEST_PATH_ENV_VAR = "MODEL_NAVIGATOR_MANIFEST_PATH"
+MANIFEST_PATH_ENV_VAR = "DBT_MODEL_PATH"
 DISCOVERY_ROOT_ENV_VARS = (
     "MODEL_NAVIGATOR_PATH",
     "DBT_PROJECT_DIR",
@@ -474,7 +474,7 @@ def _choose_single_match(
     choices = "\n".join(f"- {manifest_path}" for _, manifest_path in unique_matches)
     raise GraphLoadError(
         f"Found multiple manifest.json files under {scope}:\n{choices}\n"
-        "Pass --manifest-path or set MODEL_NAVIGATOR_MANIFEST_PATH to choose one."
+        "Pass --manifest-path or set DBT_MODEL_PATH to choose one."
     )
 
 
