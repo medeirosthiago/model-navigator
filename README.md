@@ -35,7 +35,7 @@ For dense projects, you can switch between two graph views:
 - `column window`: the original wide slice around the current anchor
 - `selected lineage`: only the selected node's lineage, still filtered by the current depth window
 
-Use `/` to open the command palette, fuzzy-search a model, and jump directly into its focused lineage view. Use `v` to toggle between the two graph views, with `selected lineage` as the default.
+Use `/` to open the search picker, filter models by name, and jump directly into a focused lineage view. Use `v` to toggle between the two graph views, with `selected lineage` as the default.
 
 Press `Enter` to open the selected node's file in `$EDITOR`. Terminal editors such as `vim` take over the current terminal session and return you to the same graph state when you exit. GUI editors such as `zed` and `cursor` open without blanking the TUI, which keeps rendering in the integrated terminal underneath.
 
@@ -45,10 +45,9 @@ Discovery prefers explicit inputs before defaults:
 
 1. `--manifest-path`
 2. positional `path`
-3. `$MODEL_NAVIGATOR_MANIFEST_PATH`
-4. `$MODEL_NAVIGATOR_PATH`
-5. `$DBT_PROJECT_DIR`
-6. current working directory
+3. `$DBT_MODEL_PATH`
+4. `$DBT_PROJECT_DIR`
+5. current working directory
 
 When starting from a directory, model-navigator looks in sensible dbt places first:
 
@@ -69,3 +68,18 @@ Use `--select <model>` to focus a specific node at startup. Selectors match:
 - rendered label such as `source_name.table_name`
 
 You can also set a default selection with `$MODEL_NAVIGATOR_SELECT`.
+
+## Keyboard Shortcuts
+
+| Key | Action |
+|---|---|
+| `h` / `←` | Previous node |
+| `l` / `→` | Next node |
+| `k` / `↑` | Node above |
+| `j` / `↓` | Node below |
+| `/` | Search nodes |
+| `Enter` | Open in editor |
+| `f` | Toggle focus mode |
+| `v` | Toggle view |
+| `[` / `]` | Decrease / increase depth |
+| `Ctrl-C` | Quit |
