@@ -13,6 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Key
 from textual.reactive import reactive
+from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static
 
@@ -490,6 +491,45 @@ class Inspector(Static):
         )
 
 
+HELP_TEXT = """\
+Model Navigator — Keyboard Shortcuts
+========================================
+
+Navigation
+  h/l           Previous/next node
+  j/k           Node below/above
+  Arrow keys    Previous/next/below/above
+
+Graph
+  /             Search nodes
+  f             Toggle focus mode
+  v             Toggle view
+  [/]           Decrease/increase depth
+  d             Toggle inspector
+
+Other
+  Enter         Open in editor
+  ?             Show this help
+  Ctrl-C        Quit
+"""
+
+
+class HelpScreen(Screen):
+    """Simple scrollable help screen."""
+
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "Back", show=False),
+        Binding("ctrl+c", "app.quit", "Quit", show=False),
+    ]
+    DEFAULT_CSS = """
+    HelpScreen { padding: 1 2; }
+    HelpScreen Static { width: 1fr; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static(HELP_TEXT)
+
+
 class ModelNavigatorApp(App[None]):
     ENABLE_COMMAND_PALETTE = False
     ESCAPE_TO_MINIMIZE = False
@@ -505,7 +545,7 @@ class ModelNavigatorApp(App[None]):
     }
 
     #graph {
-        width: 1fr;
+        width: 3fr;
         height: 1fr;
         align: center middle;
         border: tall $accent;
@@ -513,7 +553,7 @@ class ModelNavigatorApp(App[None]):
     }
 
     #inspector {
-        width: 38;
+        width: 1fr;
         height: 1fr;
         border: tall $accent;
         background: $surface;
@@ -546,6 +586,8 @@ class ModelNavigatorApp(App[None]):
         Binding("v", "toggle_view", "View", show=False),
         Binding("bracketleft", "decrease_depth", "Depth-", show=False),
         Binding("bracketright", "increase_depth", "Depth+", show=False),
+        Binding("d", "toggle_inspector", "Inspector", show=False),
+        Binding("question_mark", "show_help", "Help", show=False),
     ]
 
     def __init__(
@@ -859,6 +901,13 @@ class ModelNavigatorApp(App[None]):
         self.notify("View: column window")
         self._refresh_selection()
 
+    def action_toggle_inspector(self) -> None:
+        inspector = self.query_one("#inspector", Inspector)
+        inspector.display = not inspector.display
+
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
+
     def _refresh_selection(self) -> None:
         graph_widget = self.query_one(LineageGraph)
         visible = graph_widget.visible_nodes()
@@ -866,15 +915,17 @@ class ModelNavigatorApp(App[None]):
         selected_node: GraphNode = self.graph.nodes[graph_widget.selected]
         depth_label = str(graph_widget.depth)
         self.sub_title = f"{selected_node.label} | view {graph_widget.view_label()} | depth {depth_label} | focus {graph_widget.focus_mode}"
-        self.query_one(Inspector).show_model(
-            self.graph,
-            graph_widget.selected,
-            graph_widget.depth,
-            visible,
-            graph_widget.focus_mode,
-            graph_widget.view_mode,
-            center,
-        )
+        inspector = self.query_one("#inspector", Inspector)
+        if inspector.display:
+            inspector.show_model(
+                self.graph,
+                graph_widget.selected,
+                graph_widget.depth,
+                visible,
+                graph_widget.focus_mode,
+                graph_widget.view_mode,
+                center,
+            )
 
 
 def _resolve_editor_command() -> list[str] | None:
