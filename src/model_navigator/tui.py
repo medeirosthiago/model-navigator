@@ -667,6 +667,10 @@ class ModelNavigatorApp(App[None]):
             self.action_select_next()
             event.prevent_default()
             event.stop()
+        elif event.key == "question_mark":
+            self.action_show_help()
+            event.prevent_default()
+            event.stop()
 
     def _picker_active(self) -> bool:
         return self.query_one("#node-picker", Vertical).display
