@@ -510,7 +510,7 @@ Graph
 Other
   Enter         Open in editor
   ?             Show this help
-  Ctrl-C        Quit
+  Ctrl-Q        Quit
 """
 
 
@@ -519,7 +519,7 @@ class HelpScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back", show=False),
-        Binding("ctrl+c", "app.quit", "Quit", show=False),
+
     ]
     DEFAULT_CSS = """
     HelpScreen { padding: 1 2; }

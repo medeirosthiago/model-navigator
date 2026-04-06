@@ -82,4 +82,4 @@ You can also set a default selection with `$MODEL_NAVIGATOR_SELECT`.
 | `f` | Toggle focus mode |
 | `v` | Toggle view |
 | `[` / `]` | Decrease / increase depth |
-| `Ctrl-C` | Quit |
+| `Ctrl-Q` | Quit |
