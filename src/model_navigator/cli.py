@@ -5,22 +5,34 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
+import click
 import typer
 from rich.console import Console
+from typer.core import TyperGroup
 
 from model_navigator.dbt_graph import GraphLoadError, env_selection, load_manifest_graph
+
+
+class _DefaultGroup(TyperGroup):
+    """Typer group that forwards unknown args to the default (run) command."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if args and args[0] not in self.commands:
+            args = ["run", *args]
+        return super().parse_args(ctx, args)
+
 
 app = typer.Typer(
     name="model-navigator",
     help="Model Navigator – Navigate dbt lineage from the terminal.",
-    no_args_is_help=False,
-    invoke_without_command=True,
+    no_args_is_help=True,
+    cls=_DefaultGroup,
 )
 console = Console()
 
 
-@app.callback(invoke_without_command=True)
-def main(
+@app.command()
+def run(
     path: Annotated[
         Path | None,
         typer.Argument(
