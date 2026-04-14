@@ -30,9 +30,9 @@ def main(
             ),
         ),
     ] = None,
-    manifest_path: Annotated[
+    manifest: Annotated[
         Path | None,
-        typer.Option("--manifest-path", help="Use an explicit manifest.json file or directory"),
+        typer.Option("--manifest", help="Path to dbt manifest.json"),
     ] = None,
     select: Annotated[
         str | None,
@@ -49,7 +49,7 @@ def main(
     try:
         graph = load_manifest_graph(
             path=path.expanduser() if path else None,
-            manifest_path=manifest_path.expanduser() if manifest_path else None,
+            manifest_path=manifest.expanduser() if manifest else None,
         )
         console.print(f"[dim]Project: {graph.metadata.project_name}[/dim]")
         console.print(
