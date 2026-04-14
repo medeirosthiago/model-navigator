@@ -15,7 +15,7 @@ from textual.events import Key
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, Label, OptionList, Static
 
 from .dbt_graph import GraphNode, ManifestGraph
 from .lineage import assign_columns, nodes_with_depth, reachable_nodes, selected_lineage
@@ -492,7 +492,7 @@ class Inspector(Static):
 
 
 HELP_TEXT = """\
-Model Navigator — Keyboard Shortcuts
+model-navigator — Keyboard Shortcuts
 ========================================
 
 Navigation
@@ -503,12 +503,14 @@ Navigation
 Graph
   /             Search nodes
   f             Toggle focus mode
-  v             Toggle view
+  v             Toggle view mode
   [/]           Decrease/increase depth
   d             Toggle inspector
 
+Inspect
+  Enter         Open in editor ($EDITOR)
+
 Other
-  Enter         Open in editor
   ?             Show this help
   Ctrl-Q        Quit
 """
@@ -573,6 +575,11 @@ class ModelNavigatorApp(App[None]):
         height: auto;
         max-height: 12;
     }
+    #status-bar {
+        height: 1;
+        background: $boost;
+        padding: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -609,6 +616,7 @@ class ModelNavigatorApp(App[None]):
         with Vertical(id="node-picker"):
             yield Input(placeholder="Search nodes…", id="node-filter")
             yield OptionList(id="node-list")
+        yield Label("? for help", id="status-bar")
 
     def on_mount(self) -> None:
         self.title = "Model Navigator"
@@ -918,7 +926,16 @@ class ModelNavigatorApp(App[None]):
         center = graph_widget.visible_anchor()
         selected_node: GraphNode = self.graph.nodes[graph_widget.selected]
         depth_label = str(graph_widget.depth)
-        self.sub_title = f"{selected_node.label} | view {graph_widget.view_label()} | depth {depth_label} | focus {graph_widget.focus_mode}"
+        view = graph_widget.view_label()
+        focus = graph_widget.focus_mode
+        self.sub_title = (
+            f"{selected_node.label} | view {view} | depth {depth_label} | focus {focus}"
+        )
+        total = len(self.graph.nodes)
+        self.query_one("#status-bar", Label).update(
+            f"{selected_node.label}  \u00b7  depth {depth_label}  \u00b7  "
+            f"{view}  \u00b7  {len(visible)}/{total} nodes  \u00b7  ? for help"
+        )
         inspector = self.query_one("#inspector", Inspector)
         if inspector.display:
             inspector.show_model(

@@ -1,60 +1,75 @@
-import argparse
-import sys
+"""CLI entrypoint for model-navigator."""
+
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Annotated
 
-from .dbt_graph import GraphLoadError, env_selection, load_manifest_graph
-from .tui import ModelNavigatorApp
+import typer
+from rich.console import Console
+
+from model_navigator.dbt_graph import GraphLoadError, env_selection, load_manifest_graph
+
+app = typer.Typer(
+    name="model-navigator",
+    help="Model Navigator – Navigate dbt lineage from the terminal.",
+    no_args_is_help=False,
+    invoke_without_command=True,
+)
+console = Console()
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="model-navigator",
-        description="Navigate dbt lineage from the terminal.",
-    )
-    parser.add_argument(
-        "path",
-        nargs="?",
-        help=(
-            "Repo root, dbt project directory, dbt_project.yml, target directory, "
-            "or manifest.json."
+@app.callback(invoke_without_command=True)
+def main(
+    path: Annotated[
+        Path | None,
+        typer.Argument(
+            help=(
+                "Repo root, dbt project directory, dbt_project.yml, "
+                "target directory, or manifest.json."
+            ),
         ),
-    )
-    parser.add_argument(
-        "--manifest-path",
-        help="Use an explicit manifest.json file or directory containing it.",
-    )
-    parser.add_argument(
-        "--select",
-        help="Start on a specific node name, label, or dbt unique_id.",
-    )
-    parser.add_argument(
-        "--depth",
-        type=int,
-        default=2,
-        help="How many visible columns to render to each side of the focus anchor in the current view.",
-    )
-    return parser
-
-
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
+    ] = None,
+    manifest_path: Annotated[
+        Path | None,
+        typer.Option("--manifest-path", help="Use an explicit manifest.json file or directory"),
+    ] = None,
+    select: Annotated[
+        str | None,
+        typer.Option("--select", "-s", help="Start on a specific node name, label, or unique_id"),
+    ] = None,
+    depth: Annotated[
+        int,
+        typer.Option("--depth", "-d", help="Visible columns to each side of the focus anchor"),
+    ] = 2,
+) -> None:
+    """Navigate dbt lineage from the terminal."""
+    from model_navigator.tui import ModelNavigatorApp
 
     try:
         graph = load_manifest_graph(
-            path=Path(args.path).expanduser() if args.path else None,
-            manifest_path=(
-                Path(args.manifest_path).expanduser() if args.manifest_path else None
-            ),
+            path=path.expanduser() if path else None,
+            manifest_path=manifest_path.expanduser() if manifest_path else None,
         )
-        selected = graph.resolve_selector(args.select or env_selection())
-    except GraphLoadError as error:
-        print(f"error: {error}", file=sys.stderr)
-        raise SystemExit(2) from error
+        console.print(f"[dim]Project: {graph.metadata.project_name}[/dim]")
+        console.print(
+            f"[dim]Manifest: {graph.metadata.manifest_path} "
+            f"({len(graph.nodes)} nodes)[/dim]"
+        )
 
-    app = ModelNavigatorApp(
+        selected = graph.resolve_selector(select or env_selection())
+        console.print(f"[dim]Selected: {graph.nodes[selected].label}[/dim]")
+    except GraphLoadError as error:
+        console.print(f"[red]error:[/red] {error}")
+        raise typer.Exit(code=2) from error
+
+    tui = ModelNavigatorApp(
         graph=graph,
         initial_selected=selected,
-        initial_depth=max(args.depth, 0),
+        initial_depth=max(depth, 0),
     )
-    app.run()
+    tui.run()
+
+
+if __name__ == "__main__":
+    app()
