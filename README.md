@@ -25,10 +25,10 @@ pip install "git+https://github.com/medeirosthiago/model-navigator.git"
 ```bash
 uv run model-navigator
 uv run model-navigator /path/to/repo --select my_model
-uv run model-navigator --manifest-path /path/to/dbt/target/manifest.json
+uv run model-navigator --manifest /path/to/dbt/target/manifest.json
 ```
 
-The app loads an existing `manifest.json`, starts in the selected-lineage view with node focus, and keeps the current TUI behavior: depth-limited navigation in either view, focused lineage connectors for the selected node, and arrow-key navigation across visible nodes.
+The app loads an existing `manifest.json`, starts in the selected-lineage view with node focus, and keeps the current TUI behavior: depth-limited navigation in either view, focused lineage connectors for the selected node, and arrow-key navigation across visible nodes. dbt `source()` dependencies are shown as source nodes with an amber border and label so they stand apart from model `ref()` dependencies.
 
 For dense projects, you can switch between two graph views:
 
@@ -43,7 +43,7 @@ Press `Enter` to open the selected node's file in `$EDITOR`. Terminal editors su
 
 Discovery prefers explicit inputs before defaults:
 
-1. `--manifest-path`
+1. `--manifest`
 2. positional `path`
 3. `$DBT_MODEL_PATH`
 4. `$DBT_PROJECT_DIR`
@@ -57,7 +57,7 @@ When starting from a directory, model-navigator looks in sensible dbt places fir
 
 For project-local artifact lookup it prefers `$DBT_TARGET_PATH` when set, then the normal dbt default of `target/manifest.json` relative to `dbt_project.yml`.
 
-If multiple manifests are found, the app stops and asks for `--manifest-path` so you can choose explicitly.
+If multiple manifests are found, the app stops and asks for `--manifest` so you can choose explicitly.
 
 ## Selection
 

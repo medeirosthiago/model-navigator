@@ -4,8 +4,6 @@ import shutil
 import subprocess
 
 from rich.console import Group
-from rich.rule import Rule
-from rich.table import Table
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -15,10 +13,15 @@ from textual.events import Key
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Input, Label, OptionList, Static
+from textual.widgets import Input, Label, OptionList, RichLog, Static
 
 from .dbt_graph import GraphNode, ManifestGraph
-from .lineage import assign_columns, nodes_with_depth, reachable_nodes, selected_lineage
+from .lineage import (
+    assign_columns,
+    lineage_nodes_with_depth,
+    nodes_with_depth,
+    reachable_nodes,
+)
 
 
 class LineageGraph(Widget, can_focus=True):
@@ -36,8 +39,12 @@ class LineageGraph(Widget, can_focus=True):
     BOX_FILL_STYLE = "on #1e1e1e"
     BOX_BORDER_STYLE = "#555555 on #1e1e1e"
     BOX_LABEL_STYLE = "#e0e0e0 on #1e1e1e"
+    SOURCE_BORDER_STYLE = "#d7af00 on #1e1e1e"
+    SOURCE_LABEL_STYLE = "#ffd75f on #1e1e1e"
     SELECTED_BORDER_STYLE = "bold #0178d4 on #1e1e1e"
     SELECTED_LABEL_STYLE = "bold #ffffff on #1e1e1e"
+    SELECTED_SOURCE_BORDER_STYLE = "bold #d7af00 on #1e1e1e"
+    SELECTED_SOURCE_LABEL_STYLE = "bold #ffffff on #1e1e1e"
     CONNECTOR_CHARS = {
         frozenset(): " ",
         frozenset({"l"}): "─",
@@ -95,12 +102,9 @@ class LineageGraph(Widget, can_focus=True):
 
     def visible_nodes(self) -> set[str]:
         if self.view_mode == self.SELECTED_LINEAGE_VIEW:
-            return selected_lineage(
+            return lineage_nodes_with_depth(
                 self.graph.nodes,
                 self.lineage_view_anchor,
-            ) & nodes_with_depth(
-                self.graph.nodes,
-                self.visible_anchor(),
                 self.depth,
             )
         return nodes_with_depth(self.graph.nodes, self.visible_anchor(), self.depth)
@@ -252,12 +256,21 @@ class LineageGraph(Widget, can_focus=True):
         styles: list[list[str]],
         x: int,
         y: int,
-        label: str,
+        node: GraphNode,
         selected: bool,
     ) -> None:
-        border_style = self.SELECTED_BORDER_STYLE if selected else self.BOX_BORDER_STYLE
-        label_style = self.SELECTED_LABEL_STYLE if selected else self.BOX_LABEL_STYLE
-        text = self._truncate_label(label, self.BOX_WIDTH - 2).center(
+        if node.resource_type == "source":
+            border_style = (
+                self.SELECTED_SOURCE_BORDER_STYLE if selected else self.SOURCE_BORDER_STYLE
+            )
+            label_style = (
+                self.SELECTED_SOURCE_LABEL_STYLE if selected else self.SOURCE_LABEL_STYLE
+            )
+        else:
+            border_style = self.SELECTED_BORDER_STYLE if selected else self.BOX_BORDER_STYLE
+            label_style = self.SELECTED_LABEL_STYLE if selected else self.BOX_LABEL_STYLE
+
+        text = self._truncate_label(node.label, self.BOX_WIDTH - 2).center(
             self.BOX_WIDTH - 2
         )
 
@@ -416,7 +429,7 @@ class LineageGraph(Widget, can_focus=True):
                 styles,
                 x,
                 y,
-                self.graph.nodes[node_id].label,
+                self.graph.nodes[node_id],
                 node_id == self.selected,
             )
 
@@ -424,17 +437,37 @@ class LineageGraph(Widget, can_focus=True):
         return self._render_viewport(chars, styles, positions, focus_point)
 
 
-class Inspector(Static):
+class Inspector(RichLog, can_focus=False):
+    SOURCE_STYLE = "#ffd75f"
+
     @staticmethod
-    def _format_relations(
+    def _append_row(text: Text, label: str, value: str | None, style: str = "") -> None:
+        if value:
+            text.append(f"{label:<12} ", style="bold")
+            text.append(value, style=style)
+            text.append("\n")
+
+    @staticmethod
+    def _append_section_title(text: Text, title: str) -> None:
+        text.append(f"{title}\n", style="bold dim")
+
+    @staticmethod
+    def _append_relations(
+        text: Text,
         graph: ManifestGraph,
         node_ids: tuple[str, ...],
-    ) -> Text:
+    ) -> None:
         if not node_ids:
-            return Text("none", style="dim")
+            text.append("none\n", style="dim")
+            return
 
-        lines = [f"- {graph.nodes[node_id].label}" for node_id in node_ids]
-        return Text("\n".join(lines), style="dim")
+        for node_id in node_ids:
+            node = graph.nodes[node_id]
+            style = Inspector.SOURCE_STYLE if node.resource_type == "source" else "dim"
+            text.append(f"- {node.label}", style=style)
+            if node.relation_dataset:
+                text.append(f"  [{node.relation_dataset}]", style=style)
+            text.append("\n")
 
     def show_model(
         self,
@@ -448,11 +481,6 @@ class Inspector(Static):
     ) -> None:
         node = graph.nodes[node_id]
         columns = assign_columns(graph.nodes)
-        title = Text(node.label, style="bold")
-        file_path = Text(
-            str(node.file_path) if node.file_path else "file unavailable",
-            style="dim",
-        )
         depth_label = str(depth)
         view_label = (
             "selected lineage"
@@ -460,35 +488,35 @@ class Inspector(Static):
             else "column window"
         )
 
-        details = Table.grid(padding=(0, 1))
-        details.add_column(style="bold", width=10)
-        details.add_column()
-        details.add_row("Type", node.resource_type)
-        details.add_row("Package", node.package_name)
-        details.add_row("Project", graph.metadata.project_name)
-        details.add_row("Column", str(columns[node_id]))
-        details.add_row("Depth", depth_label)
-        details.add_row("View", view_label)
-        details.add_row("Focus", focus_mode)
-        details.add_row("Center", graph.nodes[center].label)
-        details.add_row("Visible", f"{len(visible)} of {len(graph.nodes)}")
-
-        upstream = self._format_relations(graph, node.upstream)
-        downstream = self._format_relations(graph, node.downstream)
-
-        self.update(
-            Group(
-                title,
-                Text(node.unique_id, style="dim"),
-                file_path,
-                Rule(style="dim"),
-                details,
-                Rule(title="Upstream", style="dim"),
-                upstream,
-                Rule(title="Downstream", style="dim"),
-                downstream,
-            )
+        content = Text(no_wrap=True)
+        content.append(f"{node.label}\n", style="bold")
+        content.append(f"{node.unique_id}\n", style="dim")
+        content.append(
+            f"{str(node.file_path) if node.file_path else 'file unavailable'}\n",
+            style="dim",
         )
+
+        self._append_row(content, "Type", node.resource_type)
+        self._append_row(content, "Package", node.package_name)
+        self._append_row(content, "dbt Project", graph.metadata.project_name)
+        self._append_row(content, "Project", node.relation_project)
+        self._append_row(content, "Dataset", node.relation_dataset)
+        self._append_row(content, "Table", node.relation_identifier)
+        self._append_row(content, "Column", str(columns[node_id]))
+        self._append_row(content, "Depth", depth_label)
+        self._append_row(content, "View", view_label)
+        self._append_row(content, "Focus", focus_mode)
+        self._append_row(content, "Center", graph.nodes[center].label)
+        self._append_row(content, "Visible", f"{len(visible)} of {len(graph.nodes)}")
+
+        content.append("\n")
+        self._append_section_title(content, "Upstream")
+        self._append_relations(content, graph, node.upstream)
+        self._append_section_title(content, "Downstream")
+        self._append_relations(content, graph, node.downstream)
+
+        self.clear()
+        self.write(content)
 
 
 HELP_TEXT = """\
@@ -544,6 +572,8 @@ class ModelNavigatorApp(App[None]):
 
     #body {
         height: 1fr;
+        margin: 0;
+        padding: 0;
     }
 
     #graph {
@@ -552,14 +582,21 @@ class ModelNavigatorApp(App[None]):
         align: center middle;
         border: tall $accent;
         background: $surface;
+        margin: 0;
     }
 
     #inspector {
         width: 1fr;
         height: 1fr;
         border: tall $accent;
+        border-left: none;
         background: $surface;
         padding: 1 2;
+        margin: 0;
+        overflow: auto auto;
+        scrollbar-gutter: auto;
+        scrollbar-visibility: hidden;
+        text-wrap: nowrap;
     }
 
     #node-picker {
@@ -612,7 +649,12 @@ class ModelNavigatorApp(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
             yield LineageGraph(self.graph, self.initial_selected, self.initial_depth)
-            yield Inspector("Inspector", id="inspector")
+            yield Inspector(
+                min_width=78,
+                wrap=False,
+                auto_scroll=False,
+                id="inspector",
+            )
         with Vertical(id="node-picker"):
             yield Input(placeholder="Search nodes…", id="node-filter")
             yield OptionList(id="node-list")
