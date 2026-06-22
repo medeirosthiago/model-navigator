@@ -35,6 +35,34 @@ def nodes_with_depth(
     }
 
 
+def lineage_nodes_with_depth(
+    graph: dict[str, GraphNode],
+    selected: str,
+    depth: int,
+) -> set[str]:
+    max_depth = max(depth, 0)
+    visible = {selected}
+
+    for direction in ("upstream", "downstream"):
+        frontier = [(selected, 0)]
+        while frontier:
+            name, current_depth = frontier.pop(0)
+            if current_depth >= max_depth:
+                continue
+            neighbors = (
+                graph[name].upstream
+                if direction == "upstream"
+                else graph[name].downstream
+            )
+            for neighbor in neighbors:
+                if neighbor in visible:
+                    continue
+                visible.add(neighbor)
+                frontier.append((neighbor, current_depth + 1))
+
+    return visible
+
+
 def reachable_nodes(
     graph: dict[str, GraphNode],
     selected: str,

@@ -71,6 +71,10 @@ class GraphNode:
     unique_id: str
     name: str
     label: str
+    relation_name: str | None
+    relation_project: str | None
+    relation_dataset: str | None
+    relation_identifier: str | None
     resource_type: str
     package_name: str
     file_path: Path | None
@@ -209,10 +213,18 @@ def load_manifest_graph(
         resource_type = node.get("resource_type", "unknown")
         name = node.get("name", unique_id)
         label = _build_label(node, resource_type, name)
+        relation_name = _clean_relation_name(node.get("relation_name"))
+        relation_project, relation_dataset, relation_identifier = _split_relation_name(
+            relation_name
+        )
         graph_node = GraphNode(
             unique_id=unique_id,
             name=name,
             label=label,
+            relation_name=relation_name,
+            relation_project=relation_project,
+            relation_dataset=relation_dataset,
+            relation_identifier=relation_identifier,
             resource_type=resource_type,
             package_name=node.get("package_name", metadata.project_name),
             file_path=_resolve_file_path(
@@ -237,8 +249,13 @@ def load_manifest_graph(
         selector_index[unique_id.casefold()].add(unique_id)
         selector_index[name.casefold()].add(unique_id)
         selector_index[label.casefold()].add(unique_id)
+        if graph_node.relation_name:
+            selector_index[graph_node.relation_name.casefold()].add(unique_id)
         selector_index[f"{graph_node.package_name}.{name}".casefold()].add(unique_id)
         selector_index[f"{graph_node.package_name}.{label}".casefold()].add(unique_id)
+        source_name = node.get("source_name")
+        if source_name:
+            selector_index[f"{source_name}.{name}".casefold()].add(unique_id)
 
     return ManifestGraph(
         metadata=metadata,
@@ -288,11 +305,27 @@ def _collect_visible_nodes(raw_manifest: dict) -> dict[str, dict]:
 
 
 def _build_label(node: dict, resource_type: str, name: str) -> str:
-    if resource_type == "source":
-        source_name = node.get("source_name")
-        if source_name:
-            return f"{source_name}.{name}"
     return name
+
+
+def _clean_relation_name(relation_name: str | None) -> str | None:
+    if relation_name is None:
+        return None
+    cleaned = relation_name.replace("`", "").strip()
+    return cleaned or None
+
+
+def _split_relation_name(
+    relation_name: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    if relation_name is None:
+        return None, None, None
+
+    parts = relation_name.split(".")
+    if len(parts) < 3:
+        return None, None, relation_name
+
+    return parts[0], parts[1], ".".join(parts[2:])
 
 
 def _node_sort_key(node_id: str, raw_nodes: dict[str, dict]) -> tuple[str, str]:
@@ -343,7 +376,8 @@ def _discover_from_root(root: Path) -> ManifestLocation:
         if root.name == "dbt_project.yml":
             return _discover_from_project_dir(root.parent)
         raise GraphLoadError(
-            f"Unsupported path {root}. Use a repo root, dbt project directory, target directory, dbt_project.yml, or manifest.json."
+            f"Unsupported path {root}. Use a repo root, dbt project directory, "
+            "target directory, dbt_project.yml, or manifest.json."
         )
 
     direct = _direct_manifest_match(root)
@@ -373,11 +407,12 @@ def _discover_from_root(root: Path) -> ManifestLocation:
             str(candidate) for candidate in _project_manifest_candidates(root)
         )
         raise GraphLoadError(
-            f"Found dbt project at {root}, but no manifest.json. Looked for {searched}. Run dbt parse or dbt compile first."
+            f"Found dbt project at {root}, but no manifest.json. Looked for "
+            f"{searched}. Run dbt parse or dbt compile first."
         )
 
     raise GraphLoadError(
-        "Could not find dbt metadata. Set --manifest-path, set "
+        "Could not find dbt metadata. Set --manifest, set "
         f"{MANIFEST_PATH_ENV_VAR}, or point model-navigator at a repo or dbt project directory."
     )
 
@@ -395,7 +430,8 @@ def _discover_from_project_dir(project_dir: Path) -> ManifestLocation:
         str(candidate) for candidate in _project_manifest_candidates(project_dir)
     )
     raise GraphLoadError(
-        f"Found dbt project at {project_dir}, but no manifest.json. Looked for {searched}. Run dbt parse or dbt compile first."
+        f"Found dbt project at {project_dir}, but no manifest.json. Looked for "
+        f"{searched}. Run dbt parse or dbt compile first."
     )
 
 
@@ -421,10 +457,7 @@ def _project_manifest_candidates(project_dir: Path) -> list[Path]:
     target_override = os.environ.get(DBT_TARGET_PATH_ENV_VAR)
     if target_override:
         target_path = Path(target_override).expanduser()
-        if target_path.is_absolute():
-            candidate = target_path
-        else:
-            candidate = project_dir / target_path
+        candidate = target_path if target_path.is_absolute() else project_dir / target_path
         if candidate.name != "manifest.json":
             candidate = candidate / "manifest.json"
         candidates.append(candidate.resolve())
@@ -474,7 +507,7 @@ def _choose_single_match(
     choices = "\n".join(f"- {manifest_path}" for _, manifest_path in unique_matches)
     raise GraphLoadError(
         f"Found multiple manifest.json files under {scope}:\n{choices}\n"
-        "Pass --manifest-path or set DBT_MODEL_PATH to choose one."
+        "Pass --manifest or set DBT_MODEL_PATH to choose one."
     )
 
 
