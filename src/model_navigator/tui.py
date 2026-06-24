@@ -527,6 +527,7 @@ Navigation
   h/l           Previous/next node
   j/k           Node below/above
   Arrow keys    Previous/next/below/above
+  u/n           Previous upstream / next downstream relation
 
 Graph
   /             Search nodes
@@ -630,6 +631,8 @@ class ModelNavigatorApp(App[None]):
         Binding("v", "toggle_view", "View", show=False),
         Binding("bracketleft", "decrease_depth", "Depth-", show=False),
         Binding("bracketright", "increase_depth", "Depth+", show=False),
+        Binding("u", "select_upstream_relation", "Upstream", show=False),
+        Binding("n", "select_downstream_relation", "Downstream", show=False),
         Binding("d", "toggle_inspector", "Inspector", show=False),
         Binding("question_mark", "show_help", "Help", show=False),
     ]
@@ -645,6 +648,7 @@ class ModelNavigatorApp(App[None]):
         self.initial_selected = initial_selected
         self.initial_depth = max(initial_depth, 0)
         self._filtered_nodes: list[str] = []
+        self._relation_cycle: tuple[str, str, int] | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -788,9 +792,11 @@ class ModelNavigatorApp(App[None]):
         self.select_node(node_id, isolate=True)
 
     def action_select_prev(self) -> None:
+        self._relation_cycle = None
         self._move_horizontal(-1)
 
     def action_select_next(self) -> None:
+        self._relation_cycle = None
         self._move_horizontal(1)
 
     def _sorted_visible_nodes(
@@ -831,10 +837,41 @@ class ModelNavigatorApp(App[None]):
         self._refresh_selection()
 
     def action_select_up(self) -> None:
+        self._relation_cycle = None
         self._move_vertical(-1)
 
     def action_select_down(self) -> None:
+        self._relation_cycle = None
         self._move_vertical(1)
+
+    def action_select_upstream_relation(self) -> None:
+        self._select_direct_relation("upstream")
+
+    def action_select_downstream_relation(self) -> None:
+        self._select_direct_relation("downstream")
+
+    def _select_direct_relation(self, direction: str) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        anchor = graph_widget.selected
+        if self._relation_cycle and self._relation_cycle[1] == direction:
+            anchor = self._relation_cycle[0]
+        node = self.graph.nodes[anchor]
+        relations = node.upstream if direction == "upstream" else node.downstream
+        ordered = sorted(relations, key=graph_widget.sort_key)
+        if not ordered:
+            self.notify(f"No direct {direction} relation", severity="warning")
+            self._relation_cycle = None
+            return
+        previous_index = -1
+        if (
+            self._relation_cycle
+            and self._relation_cycle[0] == anchor
+            and self._relation_cycle[1] == direction
+        ):
+            previous_index = self._relation_cycle[2]
+        next_index = (previous_index + 1) % len(ordered)
+        self._relation_cycle = (anchor, direction, next_index)
+        self.select_node(ordered[next_index], isolate=True)
 
     def _move_vertical(self, direction: int) -> None:
         graph_widget = self.query_one(LineageGraph)
@@ -857,6 +894,7 @@ class ModelNavigatorApp(App[None]):
         graph_widget = self.query_one(LineageGraph)
         if graph_widget.depth == 0:
             return
+        self._relation_cycle = None
         graph_widget.depth -= 1
         graph_widget.ensure_selection_visible()
         self.notify(f"Depth: {graph_widget.depth}")
@@ -867,6 +905,7 @@ class ModelNavigatorApp(App[None]):
         max_depth = len(graph_widget.graph.nodes) - 1
         if graph_widget.depth >= max_depth:
             return
+        self._relation_cycle = None
         graph_widget.depth += 1
         graph_widget.ensure_selection_visible()
         self.notify(f"Depth: {graph_widget.depth}")

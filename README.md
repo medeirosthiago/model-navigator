@@ -28,6 +28,43 @@ uv run model-navigator /path/to/repo --select my_model
 uv run model-navigator --manifest /path/to/dbt/target/manifest.json
 ```
 
+For scripts and editor integrations, inspect a model without opening the TUI:
+
+```bash
+uv run model-navigator inspect --manifest /path/to/dbt/target/manifest.json --select my_model --format json
+```
+
+The JSON output includes project metadata, the selected node, and direct upstream and downstream nodes with file paths and relation metadata.
+
+## Neovim integration
+
+This repository also includes a tiny Neovim plugin. It opens model-navigator in a terminal split and, when the current buffer is a dbt model, starts focused on the current file's model name. If `$DBT_MODEL_PATH` is set to a `manifest.json`, the plugin passes it as `--manifest`; otherwise it uses `$DBT_PROJECT_DIR`, `$MODEL_NAVIGATOR_PATH`, or nearest project discovery.
+
+```lua
+vim.pack.add({
+  { src = 'file:///Users/mds/src/lab/model-navigator' },
+})
+
+require('model_navigator').setup({
+  cmd = { 'uv', 'run', '--project', '/Users/mds/src/lab/model-navigator', '--', 'model-navigator' },
+})
+```
+
+Commands and mappings:
+
+- `:ModelNavigator` opens model-navigator for the current buffer model.
+- `:ModelNavigator some_model` opens model-navigator focused on `some_model`.
+- `<leader>mn` is mapped by default to open model-navigator.
+
+Configure/disable the default mapping:
+
+```lua
+require('model_navigator').setup({
+  keymaps = { open = '<leader>dn' },
+  -- or: keymaps = false,
+})
+```
+
 The app loads an existing `manifest.json`, starts in the selected-lineage view with node focus, and keeps the current TUI behavior: depth-limited navigation in either view, focused lineage connectors for the selected node, and arrow-key navigation across visible nodes. dbt `source()` dependencies are shown as source nodes with an amber border and label so they stand apart from model `ref()` dependencies.
 
 For dense projects, you can switch between two graph views:
@@ -77,6 +114,8 @@ You can also set a default selection with `$MODEL_NAVIGATOR_SELECT`.
 | `l` / `→` | Next node |
 | `k` / `↑` | Node above |
 | `j` / `↓` | Node below |
+| `u` | Cycle direct upstream relations |
+| `n` | Cycle direct downstream relations |
 | `/` | Search nodes |
 | `Enter` | Open in editor |
 | `f` | Toggle focus mode |

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import click
 import typer
@@ -29,6 +30,51 @@ app = typer.Typer(
     cls=_DefaultGroup,
 )
 console = Console()
+
+
+def _node_payload(graph_node: Any) -> dict[str, str | None]:
+    return {
+        "unique_id": graph_node.unique_id,
+        "name": graph_node.name,
+        "label": graph_node.label,
+        "resource_type": graph_node.resource_type,
+        "package_name": graph_node.package_name,
+        "file_path": str(graph_node.file_path) if graph_node.file_path else None,
+        "relation_name": graph_node.relation_name,
+        "relation_project": graph_node.relation_project,
+        "relation_dataset": graph_node.relation_dataset,
+        "relation_identifier": graph_node.relation_identifier,
+    }
+
+
+def _inspect_payload(
+    path: Path | None,
+    manifest: Path | None,
+    select: str | None,
+) -> dict[str, Any]:
+    graph = load_manifest_graph(
+        path=path.expanduser() if path else None,
+        manifest_path=manifest.expanduser() if manifest else None,
+    )
+    selected = graph.resolve_selector(select or env_selection())
+    selected_node = graph.nodes[selected]
+
+    return {
+        "metadata": {
+            "project_dir": str(graph.metadata.project_dir),
+            "manifest_path": str(graph.metadata.manifest_path),
+            "project_name": graph.metadata.project_name,
+            "dbt_version": graph.metadata.dbt_version,
+            "generated_at": graph.metadata.generated_at,
+        },
+        "selected": _node_payload(selected_node),
+        "upstream": [
+            _node_payload(graph.nodes[node_id]) for node_id in selected_node.upstream
+        ],
+        "downstream": [
+            _node_payload(graph.nodes[node_id]) for node_id in selected_node.downstream
+        ],
+    }
 
 
 @app.command()
@@ -81,6 +127,44 @@ def run(
         initial_depth=max(depth, 0),
     )
     tui.run()
+
+
+@app.command()
+def inspect(
+    path: Annotated[
+        Path | None,
+        typer.Argument(
+            help=(
+                "Repo root, dbt project directory, dbt_project.yml, "
+                "target directory, or manifest.json."
+            ),
+        ),
+    ] = None,
+    manifest: Annotated[
+        Path | None,
+        typer.Option("--manifest", help="Path to dbt manifest.json"),
+    ] = None,
+    select: Annotated[
+        str | None,
+        typer.Option("--select", "-s", help="Node name, label, or unique_id to inspect"),
+    ] = None,
+    output_format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format. Currently only json is supported."),
+    ] = "json",
+) -> None:
+    """Print direct upstream and downstream lineage for a dbt node."""
+    if output_format != "json":
+        console.print("[red]error:[/red] only --format json is supported")
+        raise typer.Exit(code=2)
+
+    try:
+        payload = _inspect_payload(path=path, manifest=manifest, select=select)
+    except GraphLoadError as error:
+        console.print(f"[red]error:[/red] {error}")
+        raise typer.Exit(code=2) from error
+
+    typer.echo(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":
