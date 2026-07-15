@@ -17,10 +17,8 @@ from textual.widgets import Input, Label, OptionList, RichLog, Static
 
 from .dbt_graph import GraphNode, ManifestGraph
 from .lineage import (
-    assign_columns,
     lineage_columns,
     lineage_nodes_with_depth,
-    nodes_with_depth,
     reachable_nodes,
 )
 
@@ -28,8 +26,6 @@ from .lineage import (
 class LineageGraph(Widget, can_focus=True):
     NODE_FOCUS = "node"
     LINEAGE_FOCUS = "lineage"
-    WINDOW_VIEW = "window"
-    SELECTED_LINEAGE_VIEW = "selected_lineage"
     BOX_WIDTH = 30
     BOX_HEIGHT = 3
     COLUMN_GAP = 8
@@ -68,7 +64,6 @@ class LineageGraph(Widget, can_focus=True):
     selected = reactive("")
     depth = reactive(2)
     focus_mode = reactive(NODE_FOCUS)
-    view_mode = reactive(SELECTED_LINEAGE_VIEW)
 
     def __init__(
         self,
@@ -81,64 +76,36 @@ class LineageGraph(Widget, can_focus=True):
         self.selected = selected
         self.depth = max(depth, 0)
         self.lineage_anchor = selected
-        self.lineage_view_anchor = selected
 
     def sort_key(self, node_id: str) -> tuple[str, str]:
         node = self.graph.nodes[node_id]
         return (node.label.casefold(), node.unique_id.casefold())
 
-    def view_label(self) -> str:
-        if self.view_mode == self.SELECTED_LINEAGE_VIEW:
-            return "selected lineage"
-        return "column window"
-
-    def visible_anchor(self) -> str:
-        if self.view_mode == self.SELECTED_LINEAGE_VIEW:
-            if self.focus_mode == self.LINEAGE_FOCUS:
-                return self.lineage_anchor
-            return self.selected
-        if self.focus_mode == self.LINEAGE_FOCUS:
-            return self.lineage_anchor
-        return self.selected
-
     def visible_nodes(self) -> set[str]:
-        if self.view_mode == self.SELECTED_LINEAGE_VIEW:
-            return lineage_nodes_with_depth(
-                self.graph.nodes,
-                self.lineage_view_anchor,
-                self.depth,
-            )
-        return nodes_with_depth(self.graph.nodes, self.visible_anchor(), self.depth)
+        return lineage_nodes_with_depth(
+            self.graph.nodes,
+            self.lineage_anchor,
+            self.depth,
+        )
 
     def columns(self) -> dict[str, int]:
-        if self.view_mode == self.SELECTED_LINEAGE_VIEW:
-            return lineage_columns(
-                self.graph.nodes,
-                self.lineage_view_anchor,
-                self.visible_nodes(),
-            )
-        return assign_columns(self.graph.nodes)
+        return lineage_columns(
+            self.graph.nodes,
+            self.lineage_anchor,
+            self.visible_nodes(),
+        )
 
-    def set_view_mode(self, mode: str) -> None:
-        if mode == self.SELECTED_LINEAGE_VIEW:
-            self.lineage_view_anchor = self.selected
-            self.lineage_anchor = self.selected
-        self.view_mode = mode
-        if mode == self.WINDOW_VIEW and self.focus_mode == self.LINEAGE_FOCUS:
-            self.lineage_anchor = self.selected
+    def focus_selected_lineage(self) -> None:
+        self.lineage_anchor = self.selected
         self.refresh()
 
     def set_focus_mode(self, mode: str) -> None:
-        if mode == self.LINEAGE_FOCUS:
-            self.lineage_anchor = self.selected
         self.focus_mode = mode
 
     def ensure_selection_visible(self) -> None:
-        if self.focus_mode != self.LINEAGE_FOCUS:
-            return
         columns = self.columns()
-        if abs(columns[self.selected] - columns[self.visible_anchor()]) > self.depth:
-            self.lineage_anchor = self.selected
+        if self.selected not in columns:
+            self.focus_selected_lineage()
 
     def focused_edges(self, visible: set[str]) -> set[tuple[str, str]]:
         upstream = reachable_nodes(self.graph.nodes, self.selected, "upstream")
@@ -495,17 +462,11 @@ class Inspector(RichLog, can_focus=False):
         depth: int,
         visible: set[str],
         focus_mode: str,
-        view_mode: str,
-        center: str,
+        anchor: str,
         columns: dict[str, int],
     ) -> None:
         node = graph.nodes[node_id]
         depth_label = str(depth)
-        view_label = (
-            "selected lineage"
-            if view_mode == LineageGraph.SELECTED_LINEAGE_VIEW
-            else "column window"
-        )
 
         content = Text(no_wrap=True)
         content.append(f"{node.label}\n", style="bold")
@@ -524,9 +485,8 @@ class Inspector(RichLog, can_focus=False):
         self._append_row(content, "Table", node.relation_identifier)
         self._append_row(content, "Column", str(columns[node_id]))
         self._append_row(content, "Depth", depth_label)
-        self._append_row(content, "View", view_label)
         self._append_row(content, "Focus", focus_mode)
-        self._append_row(content, "Center", graph.nodes[center].label)
+        self._append_row(content, "Anchor", graph.nodes[anchor].label)
         self._append_row(content, "Visible", f"{len(visible)} of {len(graph.nodes)}")
 
         content.append("\n")
@@ -551,8 +511,10 @@ Navigation
 
 Graph
   /             Search nodes
+  Space         Focus selected model's lineage
+  Ctrl-O        Jump to previous lineage anchor
+  Ctrl-I / Tab  Jump to next lineage anchor
   f             Toggle focus mode
-  v             Toggle view mode
   [/]           Decrease/increase depth
   d             Toggle inspector
 
@@ -647,8 +609,10 @@ class ModelNavigatorApp(App[None]):
         Binding("down", "select_down", "Down", show=False),
         Binding("enter", "open_selected", "Open", show=False),
         Binding("slash", "open_node_picker", "Search", show=False),
+        Binding("space", "focus_lineage", "Focus lineage", show=False),
+        Binding("ctrl+o", "jump_back", "Back", show=False, priority=True),
+        Binding("ctrl+i", "jump_forward", "Forward", show=False, priority=True),
         Binding("f", "toggle_focus", "Focus", show=False),
-        Binding("v", "toggle_view", "View", show=False),
         Binding("bracketleft", "decrease_depth", "Depth-", show=False),
         Binding("bracketright", "increase_depth", "Depth+", show=False),
         Binding("u", "select_upstream_relation", "Upstream", show=False),
@@ -669,6 +633,8 @@ class ModelNavigatorApp(App[None]):
         self.initial_depth = max(initial_depth, 0)
         self._filtered_nodes: list[str] = []
         self._relation_cycle: tuple[str, str, int] | None = None
+        self._anchor_back: list[str] = []
+        self._anchor_forward: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -809,7 +775,7 @@ class ModelNavigatorApp(App[None]):
             return
         node_id = self._filtered_nodes[option_idx]
         self._dismiss_picker()
-        self.select_node(node_id, isolate=True)
+        self.select_node(node_id, focus_lineage=True)
 
     def action_select_prev(self) -> None:
         self._relation_cycle = None
@@ -891,7 +857,7 @@ class ModelNavigatorApp(App[None]):
             previous_index = self._relation_cycle[2]
         next_index = (previous_index + 1) % len(ordered)
         self._relation_cycle = (anchor, direction, next_index)
-        self.select_node(ordered[next_index], isolate=True)
+        self.select_node(ordered[next_index])
 
     def _move_vertical(self, direction: int) -> None:
         graph_widget = self.query_one(LineageGraph)
@@ -917,7 +883,6 @@ class ModelNavigatorApp(App[None]):
         self._relation_cycle = None
         graph_widget.depth -= 1
         graph_widget.ensure_selection_visible()
-        self.notify(f"Depth: {graph_widget.depth}")
         self._refresh_selection()
 
     def action_increase_depth(self) -> None:
@@ -928,7 +893,6 @@ class ModelNavigatorApp(App[None]):
         self._relation_cycle = None
         graph_widget.depth += 1
         graph_widget.ensure_selection_visible()
-        self.notify(f"Depth: {graph_widget.depth}")
         self._refresh_selection()
 
     def action_toggle_focus(self) -> None:
@@ -939,15 +903,31 @@ class ModelNavigatorApp(App[None]):
             else LineageGraph.NODE_FOCUS
         )
         graph_widget.set_focus_mode(next_mode)
-        self.notify(f"Focus: {graph_widget.focus_mode}")
         self._refresh_selection()
 
-    def action_toggle_view(self) -> None:
+    def action_focus_lineage(self) -> None:
         graph_widget = self.query_one(LineageGraph)
-        if graph_widget.view_mode == LineageGraph.WINDOW_VIEW:
-            self.show_selected_lineage()
-        else:
-            self.show_full_graph()
+        self._relation_cycle = None
+        self._focus_lineage(graph_widget.selected)
+        self._refresh_selection()
+
+    def action_jump_back(self) -> None:
+        self._jump_anchor(self._anchor_back, self._anchor_forward)
+
+    def action_jump_forward(self) -> None:
+        self._jump_anchor(self._anchor_forward, self._anchor_back)
+
+    def _jump_anchor(self, source: list[str], destination: list[str]) -> None:
+        if not source:
+            self.notify("No lineage anchor in that direction")
+            return
+        graph_widget = self.query_one(LineageGraph)
+        destination.append(graph_widget.lineage_anchor)
+        target = source.pop()
+        graph_widget.selected = target
+        graph_widget.focus_selected_lineage()
+        self._relation_cycle = None
+        self._refresh_selection()
 
     def action_open_selected(self) -> None:
         graph_widget = self.query_one(LineageGraph)
@@ -993,26 +973,22 @@ class ModelNavigatorApp(App[None]):
         graph_widget.refresh()
         self._refresh_selection()
 
-    def select_node(self, node_id: str, isolate: bool = False) -> None:
+    def select_node(self, node_id: str, focus_lineage: bool = False) -> None:
         graph_widget = self.query_one(LineageGraph)
+        if focus_lineage:
+            self._focus_lineage(node_id)
+        else:
+            graph_widget.selected = node_id
+        graph_widget.ensure_selection_visible()
+        self._refresh_selection()
+
+    def _focus_lineage(self, node_id: str) -> None:
+        graph_widget = self.query_one(LineageGraph)
+        if node_id != graph_widget.lineage_anchor:
+            self._anchor_back.append(graph_widget.lineage_anchor)
+            self._anchor_forward.clear()
         graph_widget.selected = node_id
-        if isolate:
-            graph_widget.set_view_mode(LineageGraph.SELECTED_LINEAGE_VIEW)
-        graph_widget.ensure_selection_visible()
-        self._refresh_selection()
-
-    def show_selected_lineage(self) -> None:
-        graph_widget = self.query_one(LineageGraph)
-        graph_widget.set_view_mode(LineageGraph.SELECTED_LINEAGE_VIEW)
-        self.notify("View: selected lineage")
-        self._refresh_selection()
-
-    def show_full_graph(self) -> None:
-        graph_widget = self.query_one(LineageGraph)
-        graph_widget.set_view_mode(LineageGraph.WINDOW_VIEW)
-        graph_widget.ensure_selection_visible()
-        self.notify("View: column window")
-        self._refresh_selection()
+        graph_widget.focus_selected_lineage()
 
     def action_toggle_inspector(self) -> None:
         inspector = self.query_one("#inspector", Inspector)
@@ -1024,18 +1000,14 @@ class ModelNavigatorApp(App[None]):
     def _refresh_selection(self) -> None:
         graph_widget = self.query_one(LineageGraph)
         visible = graph_widget.visible_nodes()
-        center = graph_widget.visible_anchor()
         selected_node: GraphNode = self.graph.nodes[graph_widget.selected]
         depth_label = str(graph_widget.depth)
-        view = graph_widget.view_label()
         focus = graph_widget.focus_mode
-        self.sub_title = (
-            f"{selected_node.label} | view {view} | depth {depth_label} | focus {focus}"
-        )
+        self.sub_title = f"{selected_node.label} | depth {depth_label} | focus {focus}"
         total = len(self.graph.nodes)
         self.query_one("#status-bar", Label).update(
             f"{selected_node.label}  \u00b7  depth {depth_label}  \u00b7  "
-            f"{view}  \u00b7  {len(visible)}/{total} nodes  \u00b7  ? for help"
+            f"{len(visible)}/{total} nodes  \u00b7  ? for help"
         )
         inspector = self.query_one("#inspector", Inspector)
         if inspector.display:
@@ -1045,8 +1017,7 @@ class ModelNavigatorApp(App[None]):
                 graph_widget.depth,
                 visible,
                 graph_widget.focus_mode,
-                graph_widget.view_mode,
-                center,
+                graph_widget.lineage_anchor,
                 graph_widget.columns(),
             )
 

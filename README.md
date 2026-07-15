@@ -65,14 +65,9 @@ require('model_navigator').setup({
 })
 ```
 
-The app loads an existing `manifest.json`, starts in the selected-lineage view with node focus, and keeps the current TUI behavior: depth-limited navigation in either view, focused lineage connectors for the selected node, and arrow-key navigation across visible nodes. dbt `source()` dependencies use an amber border, while ephemeral models use dashed borders so inline transformations stand apart from physical relations.
+The app loads an existing `manifest.json` into a depth-limited lineage view with node focus. Navigate to another visible model and press `Space` to make it the lineage anchor. Use `Ctrl-O` to jump back through previous anchors and `Ctrl-I` to move forward again, as in Vim. Terminals encode `Ctrl-I` as `Tab`, so either key moves forward. dbt `source()` dependencies use an amber border, while ephemeral models use dashed borders so inline transformations stand apart from physical relations.
 
-For dense projects, you can switch between two graph views:
-
-- `column window`: the original wide slice around the current anchor
-- `selected lineage`: only the selected node's lineage, still filtered by the current depth window
-
-Use `/` to open the search picker, filter models by name, and jump directly into a focused lineage view. Use `v` to toggle between the two graph views, with `selected lineage` as the default.
+Use `/` to open the search picker, filter models by name, and jump directly into that model's lineage.
 
 Press `Enter` to open the selected node's file in `$EDITOR`. Terminal editors such as `vim` take over the current terminal session and return you to the same graph state when you exit. GUI editors such as `zed` and `cursor` open without blanking the TUI, which keeps rendering in the integrated terminal underneath.
 
@@ -117,8 +112,10 @@ You can also set a default selection with `$MODEL_NAVIGATOR_SELECT`.
 | `u` | Cycle direct upstream relations |
 | `n` | Cycle direct downstream relations |
 | `/` | Search nodes |
+| `Space` | Focus selected model's lineage |
+| `Ctrl-O` | Jump to previous lineage anchor |
+| `Ctrl-I` / `Tab` | Jump to next lineage anchor |
 | `Enter` | Open in editor |
 | `f` | Toggle focus mode |
-| `v` | Toggle view |
 | `[` / `]` | Decrease / increase depth |
 | `Ctrl-Q` | Quit |
