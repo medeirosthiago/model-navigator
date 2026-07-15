@@ -37,6 +37,7 @@ def test_load_manifest_graph_links_refs_and_sources(tmp_path):
                         "package_name": "test_project",
                         "relation_name": "`analytics`.`mart`.`customers`",
                         "original_file_path": "models/customers.sql",
+                        "config": {"materialized": "ephemeral"},
                         "depends_on": {"nodes": []},
                     },
                 },
@@ -67,6 +68,9 @@ def test_load_manifest_graph_links_refs_and_sources(tmp_path):
     assert graph.nodes["source.test_project.app.users"].relation_dataset == "raw"
     assert graph.nodes["source.test_project.app.users"].relation_identifier == "users"
     assert graph.nodes["source.test_project.app.users"].resource_type == "source"
+    assert (
+        graph.nodes["model.test_project.customers"].materialized == "ephemeral"
+    )
     assert set(graph.nodes["model.test_project.orders"].upstream) == {
         "model.test_project.customers",
         "source.test_project.app.users",

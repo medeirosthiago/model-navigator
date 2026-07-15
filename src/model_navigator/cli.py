@@ -38,6 +38,7 @@ def _node_payload(graph_node: Any) -> dict[str, str | None]:
         "name": graph_node.name,
         "label": graph_node.label,
         "resource_type": graph_node.resource_type,
+        "materialized": graph_node.materialized,
         "package_name": graph_node.package_name,
         "file_path": str(graph_node.file_path) if graph_node.file_path else None,
         "relation_name": graph_node.relation_name,

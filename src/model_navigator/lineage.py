@@ -23,21 +23,27 @@ def assign_columns(graph: dict[str, GraphNode]) -> dict[str, int]:
 def lineage_columns(
     graph: dict[str, GraphNode],
     selected: str,
+    visible: set[str] | None = None,
 ) -> dict[str, int]:
     columns = {selected: 0}
+    included = set(graph) if visible is None else visible
 
     for direction, step in (("upstream", -1), ("downstream", 1)):
-        frontier = [(selected, 0)]
-        seen = {selected}
+        frontier = [selected]
         while frontier:
-            name, distance = frontier.pop(0)
+            name = frontier.pop(0)
             neighbors = getattr(graph[name], direction)
             for neighbor in neighbors:
-                if neighbor in seen:
+                if neighbor not in included:
                     continue
-                seen.add(neighbor)
-                columns.setdefault(neighbor, (distance + 1) * step)
-                frontier.append((neighbor, distance + 1))
+                candidate = columns[name] + step
+                current = columns.get(neighbor)
+                if current is not None and (
+                    candidate >= current if step < 0 else candidate <= current
+                ):
+                    continue
+                columns[neighbor] = candidate
+                frontier.append(neighbor)
 
     return columns
 

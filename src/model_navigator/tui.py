@@ -112,7 +112,11 @@ class LineageGraph(Widget, can_focus=True):
 
     def columns(self) -> dict[str, int]:
         if self.view_mode == self.SELECTED_LINEAGE_VIEW:
-            return lineage_columns(self.graph.nodes, self.lineage_view_anchor)
+            return lineage_columns(
+                self.graph.nodes,
+                self.lineage_view_anchor,
+                self.visible_nodes(),
+            )
         return assign_columns(self.graph.nodes)
 
     def set_view_mode(self, mode: str) -> None:
@@ -276,18 +280,20 @@ class LineageGraph(Widget, can_focus=True):
             border_style = self.SELECTED_BORDER_STYLE if selected else self.BOX_BORDER_STYLE
             label_style = self.SELECTED_LABEL_STYLE if selected else self.BOX_LABEL_STYLE
 
+        horizontal = "┄" if node.materialized == "ephemeral" else "─"
+        vertical = "┊" if node.materialized == "ephemeral" else "│"
         text = self._truncate_label(node.label, self.BOX_WIDTH - 2).center(
             self.BOX_WIDTH - 2
         )
 
         for offset in range(1, self.BOX_WIDTH - 1):
-            self._set_cell(chars, styles, x + offset, y, "─", border_style)
+            self._set_cell(chars, styles, x + offset, y, horizontal, border_style)
             self._set_cell(
                 chars,
                 styles,
                 x + offset,
                 y + self.BOX_HEIGHT - 1,
-                "─",
+                horizontal,
                 border_style,
             )
         self._set_cell(chars, styles, x, y, "╭", border_style)
@@ -309,13 +315,13 @@ class LineageGraph(Widget, can_focus=True):
             border_style,
         )
 
-        self._set_cell(chars, styles, x, y + 1, "│", border_style)
+        self._set_cell(chars, styles, x, y + 1, vertical, border_style)
         self._set_cell(
             chars,
             styles,
             x + self.BOX_WIDTH - 1,
             y + 1,
-            "│",
+            vertical,
             border_style,
         )
         for offset, char in enumerate(text, start=1):
@@ -415,6 +421,7 @@ class LineageGraph(Widget, can_focus=True):
         chars = [[" " for _ in range(width)] for _ in range(height)]
         styles = [["" for _ in range(width)] for _ in range(height)]
         directions = [[set() for _ in range(width)] for _ in range(height)]
+        edge_ends = set()
 
         for parent, child in focused_edges:
             child_x, child_y = positions[child]
@@ -422,12 +429,16 @@ class LineageGraph(Widget, can_focus=True):
             parent_x, parent_y = positions[parent]
             start = (parent_x + self.BOX_WIDTH, parent_y + self.BOX_HEIGHT // 2)
             self._draw_edge(directions, start, end)
+            edge_ends.add(end)
 
         for y, row in enumerate(directions):
             for x, cell in enumerate(row):
                 if cell:
                     chars[y][x] = self.CONNECTOR_CHARS[frozenset(cell)]
                     styles[y][x] = self.CONNECTOR_STYLE
+
+        for x, y in edge_ends:
+            self._set_cell(chars, styles, x, y, "▶", self.CONNECTOR_STYLE)
 
         for node_id, (x, y) in positions.items():
             self._draw_box(
@@ -471,6 +482,8 @@ class Inspector(RichLog, can_focus=False):
             node = graph.nodes[node_id]
             style = Inspector.SOURCE_STYLE if node.resource_type == "source" else "dim"
             text.append(f"- {node.label}", style=style)
+            if node.materialized == "ephemeral":
+                text.append("  [ephemeral]", style=style)
             if node.relation_dataset:
                 text.append(f"  [{node.relation_dataset}]", style=style)
             text.append("\n")
@@ -503,6 +516,7 @@ class Inspector(RichLog, can_focus=False):
         )
 
         self._append_row(content, "Type", node.resource_type)
+        self._append_row(content, "Materialized", node.materialized)
         self._append_row(content, "Package", node.package_name)
         self._append_row(content, "dbt Project", graph.metadata.project_name)
         self._append_row(content, "Project", node.relation_project)
@@ -516,9 +530,9 @@ class Inspector(RichLog, can_focus=False):
         self._append_row(content, "Visible", f"{len(visible)} of {len(graph.nodes)}")
 
         content.append("\n")
-        self._append_section_title(content, "Upstream")
+        self._append_section_title(content, f"Upstream ({len(node.upstream)})")
         self._append_relations(content, graph, node.upstream)
-        self._append_section_title(content, "Downstream")
+        self._append_section_title(content, f"Downstream ({len(node.downstream)})")
         self._append_relations(content, graph, node.downstream)
 
         self.clear()

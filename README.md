@@ -65,7 +65,7 @@ require('model_navigator').setup({
 })
 ```
 
-The app loads an existing `manifest.json`, starts in the selected-lineage view with node focus, and keeps the current TUI behavior: depth-limited navigation in either view, focused lineage connectors for the selected node, and arrow-key navigation across visible nodes. dbt `source()` dependencies are shown as source nodes with an amber border and label so they stand apart from model `ref()` dependencies.
+The app loads an existing `manifest.json`, starts in the selected-lineage view with node focus, and keeps the current TUI behavior: depth-limited navigation in either view, focused lineage connectors for the selected node, and arrow-key navigation across visible nodes. dbt `source()` dependencies use an amber border, while ephemeral models use dashed borders so inline transformations stand apart from physical relations.
 
 For dense projects, you can switch between two graph views:
 

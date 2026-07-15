@@ -76,6 +76,7 @@ class GraphNode:
     relation_dataset: str | None
     relation_identifier: str | None
     resource_type: str
+    materialized: str | None
     package_name: str
     file_path: Path | None
     upstream: tuple[str, ...]
@@ -226,6 +227,7 @@ def load_manifest_graph(
             relation_dataset=relation_dataset,
             relation_identifier=relation_identifier,
             resource_type=resource_type,
+            materialized=node.get("config", {}).get("materialized"),
             package_name=node.get("package_name", metadata.project_name),
             file_path=_resolve_file_path(
                 metadata.project_dir,

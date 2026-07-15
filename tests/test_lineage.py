@@ -16,6 +16,7 @@ def _node(
         relation_dataset=None,
         relation_identifier=None,
         resource_type="model",
+        materialized="table",
         package_name="test_project",
         file_path=None,
         upstream=upstream,
@@ -43,13 +44,19 @@ def test_lineage_nodes_with_depth_uses_dependency_hops():
     }
 
     assert lineage_columns(graph, "rebrandly") == {
-        "source": -2,
-        "prep": -1,
+        "source": -3,
+        "prep": -2,
         "campaign": -1,
         "device": -1,
         "rebrandly": 0,
         "dashboard": 1,
     }
+
+    columns = lineage_columns(graph, "rebrandly")
+    for child, column in columns.items():
+        for parent in graph[child].upstream:
+            if parent in columns:
+                assert columns[parent] < column
 
     assert lineage_nodes_with_depth(graph, "rebrandly", 1) == {
         "campaign",
