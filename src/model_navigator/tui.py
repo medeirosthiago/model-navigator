@@ -18,6 +18,7 @@ from textual.widgets import Input, Label, OptionList, RichLog, Static
 from .dbt_graph import GraphNode, ManifestGraph
 from .lineage import (
     assign_columns,
+    lineage_columns,
     lineage_nodes_with_depth,
     nodes_with_depth,
     reachable_nodes,
@@ -109,6 +110,11 @@ class LineageGraph(Widget, can_focus=True):
             )
         return nodes_with_depth(self.graph.nodes, self.visible_anchor(), self.depth)
 
+    def columns(self) -> dict[str, int]:
+        if self.view_mode == self.SELECTED_LINEAGE_VIEW:
+            return lineage_columns(self.graph.nodes, self.lineage_view_anchor)
+        return assign_columns(self.graph.nodes)
+
     def set_view_mode(self, mode: str) -> None:
         if mode == self.SELECTED_LINEAGE_VIEW:
             self.lineage_view_anchor = self.selected
@@ -126,7 +132,7 @@ class LineageGraph(Widget, can_focus=True):
     def ensure_selection_visible(self) -> None:
         if self.focus_mode != self.LINEAGE_FOCUS:
             return
-        columns = assign_columns(self.graph.nodes)
+        columns = self.columns()
         if abs(columns[self.selected] - columns[self.visible_anchor()]) > self.depth:
             self.lineage_anchor = self.selected
 
@@ -402,7 +408,7 @@ class LineageGraph(Widget, can_focus=True):
         return Group(*lines)
 
     def render(self) -> Group:
-        columns = assign_columns(self.graph.nodes)
+        columns = self.columns()
         visible = self.visible_nodes()
         focused_edges = self.focused_edges(visible)
         positions, width, height = self._layout_nodes(columns, visible)
@@ -478,9 +484,9 @@ class Inspector(RichLog, can_focus=False):
         focus_mode: str,
         view_mode: str,
         center: str,
+        columns: dict[str, int],
     ) -> None:
         node = graph.nodes[node_id]
-        columns = assign_columns(graph.nodes)
         depth_label = str(depth)
         view_label = (
             "selected lineage"
@@ -813,7 +819,7 @@ class ModelNavigatorApp(App[None]):
 
     def _move_horizontal(self, direction: int) -> None:
         graph_widget = self.query_one(LineageGraph)
-        columns = assign_columns(graph_widget.graph.nodes)
+        columns = graph_widget.columns()
         visible = graph_widget.visible_nodes()
         current_col = columns[graph_widget.selected]
         target_col = current_col + direction
@@ -875,7 +881,7 @@ class ModelNavigatorApp(App[None]):
 
     def _move_vertical(self, direction: int) -> None:
         graph_widget = self.query_one(LineageGraph)
-        columns = assign_columns(graph_widget.graph.nodes)
+        columns = graph_widget.columns()
         visible = graph_widget.visible_nodes()
         current_col = columns[graph_widget.selected]
         siblings = self._sorted_visible_nodes(
@@ -1027,6 +1033,7 @@ class ModelNavigatorApp(App[None]):
                 graph_widget.focus_mode,
                 graph_widget.view_mode,
                 center,
+                graph_widget.columns(),
             )
 
 

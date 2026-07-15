@@ -1,5 +1,5 @@
 from model_navigator.dbt_graph import GraphNode
-from model_navigator.lineage import lineage_nodes_with_depth
+from model_navigator.lineage import lineage_columns, lineage_nodes_with_depth
 
 
 def _node(
@@ -40,6 +40,15 @@ def test_lineage_nodes_with_depth_uses_dependency_hops():
         ),
         "dashboard": _node("dashboard", upstream=("other_parent", "rebrandly")),
         "other_parent": _node("other_parent", downstream=("dashboard",)),
+    }
+
+    assert lineage_columns(graph, "rebrandly") == {
+        "source": -2,
+        "prep": -1,
+        "campaign": -1,
+        "device": -1,
+        "rebrandly": 0,
+        "dashboard": 1,
     }
 
     assert lineage_nodes_with_depth(graph, "rebrandly", 1) == {

@@ -20,6 +20,28 @@ def assign_columns(graph: dict[str, GraphNode]) -> dict[str, int]:
     return columns
 
 
+def lineage_columns(
+    graph: dict[str, GraphNode],
+    selected: str,
+) -> dict[str, int]:
+    columns = {selected: 0}
+
+    for direction, step in (("upstream", -1), ("downstream", 1)):
+        frontier = [(selected, 0)]
+        seen = {selected}
+        while frontier:
+            name, distance = frontier.pop(0)
+            neighbors = getattr(graph[name], direction)
+            for neighbor in neighbors:
+                if neighbor in seen:
+                    continue
+                seen.add(neighbor)
+                columns.setdefault(neighbor, (distance + 1) * step)
+                frontier.append((neighbor, distance + 1))
+
+    return columns
+
+
 def nodes_with_depth(
     graph: dict[str, GraphNode],
     selected: str,
