@@ -42,11 +42,11 @@ This repository also includes a tiny Neovim plugin. It opens model-navigator in 
 
 ```lua
 vim.pack.add({
-  { src = 'file:///Users/mds/src/lab/model-navigator' },
+  { src = 'file:///path/to/model-navigator' },
 })
 
 require('model_navigator').setup({
-  cmd = { 'uv', 'run', '--project', '/Users/mds/src/lab/model-navigator', '--', 'model-navigator' },
+  cmd = { 'uv', 'run', '--project', '/path/to/model-navigator', '--', 'model-navigator' },
 })
 ```
 

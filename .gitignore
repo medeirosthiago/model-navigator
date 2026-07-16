@@ -6,3 +6,10 @@ __pycache__/
 *.pyc
 .python-version
 .DS_Store
+.env
+.env.*
+!.env.example
+target/
+manifest.json
+dbt_packages/
+logs/
